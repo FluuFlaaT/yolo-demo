@@ -118,7 +118,9 @@ log_info "Log file: $LOG_FILE"
 
 # Build Docker image
 log_info "Building Docker image..."
+log_info "Note: Using linux/amd64 platform for rknn-toolkit2 compatibility"
 docker build \
+    --platform linux/amd64 \
     -f "$SCRIPT_DIR/Dockerfile.rknn-converter" \
     -t rknn-converter:latest \
     "$PROJECT_ROOT" 2>&1 | tee -a "$LOG_FILE"
@@ -149,7 +151,7 @@ if [[ -n "$DATASET" ]]; then
 fi
 
 # Run the container
-docker run "${DOCKER_ARGS[@]}" \
+docker run --platform linux/amd64 "${DOCKER_ARGS[@]}" \
     rknn-converter:latest \
     "/workspace/input/$ONNX_MODEL_NAME" \
     -o "/workspace/models/$OUTPUT_NAME" \

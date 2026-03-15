@@ -1,9 +1,11 @@
 """Gradio WebUI for YOLO Demo."""
 
 import logging
+import queue
 import tempfile
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 import gradio as gr
 
@@ -12,16 +14,58 @@ from ..inference import Detection, DetectionResult, create_engine, get_available
 from ..training.trainer import TrainingConfig, Trainer
 
 from .dataset_converter import create_dataset_converter_tab
+from .rknn_validator import create_rknn_validation_tab
+
+# Module-level state for the training thread/stop mechanism (single-user demo)
+_stop_event: threading.Event = threading.Event()
+_train_thread: threading.Thread | None = None
 
 logger = logging.getLogger(__name__)
 
+
+class _QueueLogHandler(logging.Handler):
+    """Logging handler that forwards formatted records into a queue.Queue.
+
+    Log records are put as plain strings.  The training thread signals
+    completion by putting a tuple  ("done", model_path)  or
+    ("error", message)  into the same queue.
+    """
+
+    def __init__(self, q: queue.Queue) -> None:
+        super().__init__()
+        self.q = q
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.q.put_nowait(self.format(record) + "\n")
+        except Exception:
+            self.handleError(record)
+
+
 # Predefined Ultralytics models
 ULTRALYTICS_MODELS = [
+    # YOLOv8
     ("YOLOv8n (nano, fastest)", "yolov8n.pt"),
     ("YOLOv8s (small)", "yolov8s.pt"),
     ("YOLOv8m (medium)", "yolov8m.pt"),
     ("YOLOv8l (large)", "yolov8l.pt"),
     ("YOLOv8x (xlarge, most accurate)", "yolov8x.pt"),
+    # YOLO11
+    ("YOLO11n (nano)", "yolo11n.pt"),
+    ("YOLO11s (small)", "yolo11s.pt"),
+    ("YOLO11m (medium)", "yolo11m.pt"),
+    ("YOLO11l (large)", "yolo11l.pt"),
+    ("YOLO11x (xlarge)", "yolo11x.pt"),
+    # YOLOv9
+    ("YOLOv9c (compact)", "yolov9c.pt"),
+    ("YOLOv9e (extended)", "yolov9e.pt"),
+    # YOLOv10
+    ("YOLOv10n (nano)", "yolov10n.pt"),
+    ("YOLOv10s (small)", "yolov10s.pt"),
+    ("YOLOv10m (medium)", "yolov10m.pt"),
+    ("YOLOv10b (balanced)", "yolov10b.pt"),
+    ("YOLOv10l (large)", "yolov10l.pt"),
+    ("YOLOv10x (xlarge)", "yolov10x.pt"),
 ]
 
 
@@ -71,7 +115,6 @@ def create_inference_tab() -> gr.Tab:
 
                 custom_model = gr.File(
                     label="Upload Custom Model (.pt)",
-                    file_types=[".pt"],
                     visible=False,
                 )
 
@@ -161,7 +204,23 @@ def create_training_tab() -> gr.Tab:
         with gr.Row():
             with gr.Column():
                 dataset_yaml = gr.File(label="Dataset YAML (.yaml)")
-                pretrained_model = gr.File(label="Pretrained Model (optional)", file_types=[".pt"])
+
+                # Base model selection — mirrors Inference tab pattern
+                base_model_source = gr.Radio(
+                    choices=["From List", "Upload File"],
+                    value="From List",
+                    label="Base Model Source",
+                )
+                base_model_dropdown = gr.Dropdown(
+                    choices=ULTRALYTICS_MODELS,
+                    value="yolov8n.pt",
+                    label="Select Base Model",
+                    visible=True,
+                )
+                base_model_file = gr.File(
+                    label="Upload Base Model (.pt)",
+                    visible=False,
+                )
 
                 with gr.Accordion("Training Parameters", open=False):
                     epochs = gr.Slider(10, 500, value=100, step=10, label="Epochs")
@@ -176,54 +235,187 @@ def create_training_tab() -> gr.Tab:
                         value="",
                     )
 
-                train_btn = gr.Button("Start Training", variant="primary")
+                with gr.Row():
+                    train_btn = gr.Button("Start Training", variant="primary")
+                    stop_btn = gr.Button("Stop Training", variant="stop")
 
             with gr.Column():
-                training_status = gr.Textbox(label="Status", lines=3)
+                training_status = gr.Textbox(
+                    label="Status",
+                    lines=20,
+                    max_lines=40,
+                    buttons=["copy"],
+                    placeholder="Training log will stream here...",
+                )
                 training_output = gr.File(label="Trained Model")
 
-        def run_training(dataset_yaml_file, pretrained_file, epochs, batch_size, imgsz, lr0, output):
-            try:
-                # Create training config
-                config = TrainingConfig(
-                    epochs=int(epochs),
-                    batch=int(batch_size),
-                    imgsz=int(imgsz),
-                    lr0=float(lr0),
+        def toggle_base_model_source(source):
+            if source == "From List":
+                return gr.update(visible=True), gr.update(visible=False)
+            else:
+                return gr.update(visible=False), gr.update(visible=True)
+
+        def run_training(
+            dataset_yaml_file,
+            base_source,
+            base_dropdown,
+            base_file,
+            epochs_val,
+            batch_size_val,
+            imgsz_val,
+            lr0_val,
+            output,
+        ) -> Generator:
+            global _stop_event, _train_thread
+
+            # Validate inputs
+            if dataset_yaml_file is None:
+                yield "Error: Dataset YAML is required", None
+                return
+
+            if base_source == "Upload File" and base_file is None:
+                yield "Error: Please upload a base model file", None
+                return
+
+            # Determine base model
+            if base_source == "From List":
+                model_path = base_dropdown
+            else:
+                model_path = base_file.name
+
+            # Reset stop signal
+            _stop_event.clear()
+
+            # Single queue: str → log line, tuple → ("done"|"error", payload)
+            msg_queue: queue.Queue = queue.Queue()
+
+            # Attach a log handler to the root logger so every Python logging
+            # call made anywhere in the process flows into the textbox.
+            _log_handler = _QueueLogHandler(msg_queue)
+            _log_handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+                    datefmt="%H:%M:%S",
                 )
+            )
+            _root_logger = logging.getLogger()
+            _root_logger.addHandler(_log_handler)
 
-                if pretrained_file:
-                    config.model = pretrained_file.name
+            def training_thread_fn():
+                try:
+                    config = TrainingConfig(
+                        model=model_path,
+                        epochs=int(epochs_val),
+                        batch=int(batch_size_val),
+                        imgsz=int(imgsz_val),
+                        lr0=float(lr0_val),
+                    )
+                    if output:
+                        config.project = output
 
-                if output:
-                    config.project = output
+                    trainer = Trainer(config)
+                    trainer.load_pretrained()
+                    yolo_model = trainer.model
+                    assert yolo_model is not None
 
-                # Initialize trainer
-                trainer = Trainer(config)
+                    # Stop callback: set epoch = total epochs for a clean early exit
+                    stop_ev = _stop_event
 
-                # Start training
-                dataset_path = dataset_yaml_file.name if dataset_yaml_file else None
-                if not dataset_path:
-                    return "Error: Dataset YAML is required", None
+                    def _on_epoch_end(t):
+                        if stop_ev.is_set():
+                            t.epoch = t.epochs
+                            logger.info("Stop requested — finishing current epoch and exiting.")
 
-                logger.info(f"Starting training with config: {config.to_dict()}")
-                result = trainer.train(data_yaml=dataset_path)
+                    yolo_model.add_callback("on_train_epoch_end", _on_epoch_end)
 
-                if result.success:
-                    logger.info(f"Training completed. Model saved to: {result.model_path}")
-                    return f"Training completed!\n\nModel saved to:\n{result.model_path}", result.model_path
-                else:
-                    logger.error(f"Training failed: {result.error}")
-                    return f"Training failed:\n{result.error}", None
+                    dataset_path = dataset_yaml_file.name
+                    logger.info(f"Starting training with config: {config.to_dict()}")
+                    result = trainer.train(data_yaml=dataset_path)
 
-            except Exception as e:
-                logger.error(f"Training error: {e}")
-                return f"Error: {str(e)}", None
+                    if result.success:
+                        msg_queue.put(("done", result.model_path or ""))
+                    else:
+                        msg_queue.put(("error", result.error or "Unknown error"))
+
+                except Exception as e:
+                    msg_queue.put(("error", str(e)))
+
+            _train_thread = threading.Thread(target=training_thread_fn, daemon=True)
+            _train_thread.start()
+
+            log_lines: list[str] = []
+
+            try:
+                while _train_thread.is_alive() or not msg_queue.empty():
+                    try:
+                        msg = msg_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+
+                    if isinstance(msg, tuple):
+                        kind, payload = msg
+                        if kind == "done":
+                            final_model_path = payload.strip()
+                            serve_path = None
+                            src = Path(final_model_path)
+                            try:
+                                if src.exists():
+                                    import shutil
+
+                                    dst = Path(tempfile.gettempdir()) / "yolo_trained_best.pt"
+                                    shutil.copy2(src, dst)
+                                    serve_path = str(dst)
+                                    logger.info(f"Model copied to temp for download: {dst}")
+                                else:
+                                    logger.warning(
+                                        f"Expected model not found at: {final_model_path}"
+                                    )
+                            except Exception as copy_err:
+                                logger.warning(f"Could not copy model: {copy_err}")
+                            logger.info(f"Training completed. Model saved to: {final_model_path}")
+                            if serve_path is None:
+                                logger.warning("File not available for download — see path above.")
+                            yield "".join(log_lines), serve_path
+                            return
+                        else:  # "error"
+                            logger.error(f"Training failed: {payload}")
+                            yield "".join(log_lines), None
+                            return
+                    else:
+                        log_lines.append(msg)
+                        yield "".join(log_lines), None
+
+            finally:
+                _root_logger.removeHandler(_log_handler)
+
+            yield "".join(log_lines), None
+
+        def stop_training():
+            global _stop_event
+            _stop_event.set()
 
         train_btn.click(
             fn=run_training,
-            inputs=[dataset_yaml, pretrained_model, epochs, batch_size, imgsz, lr0, output_dir],
+            inputs=[
+                dataset_yaml,
+                base_model_source,
+                base_model_dropdown,
+                base_model_file,
+                epochs,
+                batch_size,
+                imgsz,
+                lr0,
+                output_dir,
+            ],
             outputs=[training_status, training_output],
+        )
+
+        stop_btn.click(fn=stop_training, inputs=[], outputs=[])
+
+        base_model_source.change(
+            fn=toggle_base_model_source,
+            inputs=[base_model_source],
+            outputs=[base_model_dropdown, base_model_file],
         )
 
     return tab
@@ -360,6 +552,7 @@ def create_webui() -> gr.Blocks:
             create_training_tab()
             create_export_tab()
             create_dataset_converter_tab()
+            create_rknn_validation_tab()
 
         gr.Markdown(
             """
@@ -381,6 +574,10 @@ def launch(host: str = "0.0.0.0", port: int = 7860, **kwargs: Any) -> None:
 
     app = create_webui()
     logger.info(f"Launching WebUI at http://{host}:{port}")
+    # Allow serving files from anywhere under the user's home directory so
+    # that trained models written by Ultralytics (e.g. ~/runs/...) can be
+    # downloaded via the File output component.
+    kwargs.setdefault("allowed_paths", [str(Path.home())])
     app.launch(server_name=host, server_port=port, **kwargs)
 
 
