@@ -4,7 +4,7 @@ from .cpu_backend import CPUBackend
 from .cuda_backend import CUDABackend
 from .engine import Detection, DetectionResult, InferenceEngine
 from .mps_backend import MPSBackend
-from .rknn_backend import RKNNBackend
+from .rknn_backend import RKNNBackend, load_class_names_from_onnx
 
 import torch
 
@@ -38,6 +38,7 @@ def create_rknn_engine(
     conf_threshold: float = 0.25,
     iou_threshold: float = 0.45,
     max_det: int = 300,
+    class_names: dict[int, str] | list[str] | None = None,
 ) -> RKNNBackend:
     """
     Create an RKNN inference engine for RK3588.
@@ -47,6 +48,7 @@ def create_rknn_engine(
         conf_threshold: Confidence threshold for detections
         iou_threshold: IoU threshold for NMS
         max_det: Maximum number of detections
+        class_names: Optional class names dict or list
 
     Returns:
         RKNNBackend instance
@@ -56,6 +58,7 @@ def create_rknn_engine(
         conf_threshold=conf_threshold,
         iou_threshold=iou_threshold,
         max_det=max_det,
+        class_names=class_names,
     )
 
 
@@ -80,4 +83,5 @@ __all__ = [
     "create_engine",
     "create_rknn_engine",
     "get_available_backend",
+    "load_class_names_from_onnx",
 ]
