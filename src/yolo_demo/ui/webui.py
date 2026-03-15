@@ -1,5 +1,6 @@
 """Gradio WebUI for YOLO Demo."""
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,19 @@ import gradio as gr
 from ..export.onnx_exporter import ONNXExporter, prepare_for_rk3588
 from ..inference import Detection, DetectionResult, create_engine, get_available_backend
 from ..training.trainer import TrainingConfig, Trainer
+
+from .dataset_converter import create_dataset_converter_tab
+
+logger = logging.getLogger(__name__)
+
+# Predefined Ultralytics models
+ULTRALYTICS_MODELS = [
+    ("YOLOv8n (nano, fastest)", "yolov8n.pt"),
+    ("YOLOv8s (small)", "yolov8s.pt"),
+    ("YOLOv8m (medium)", "yolov8m.pt"),
+    ("YOLOv8l (large)", "yolov8l.pt"),
+    ("YOLOv8x (xlarge, most accurate)", "yolov8x.pt"),
+]
 
 
 def draw_detections(image, detections: list[Detection]) -> Any:
@@ -40,20 +54,64 @@ def create_inference_tab() -> gr.Tab:
         with gr.Row():
             with gr.Column():
                 input_image = gr.Image(label="Input Image", type="numpy")
+
+                # Model selection
+                model_type = gr.Radio(
+                    choices=["Pretrained Model", "Custom Model"],
+                    value="Pretrained Model",
+                    label="Model Source",
+                )
+
+                pretrained_model = gr.Dropdown(
+                    choices=ULTRALYTICS_MODELS,
+                    value="yolov8n.pt",
+                    label="Select Pretrained Model",
+                    visible=True,
+                )
+
+                custom_model = gr.File(
+                    label="Upload Custom Model (.pt)",
+                    file_types=[".pt"],
+                    visible=False,
+                )
+
+                conf_threshold = gr.Slider(
+                    minimum=0.01,
+                    maximum=1.0,
+                    value=0.25,
+                    step=0.01,
+                    label="Confidence Threshold",
+                )
+
                 detect_btn = gr.Button("Detect Objects", variant="primary")
 
             with gr.Column():
                 output_image = gr.Image(label="Detection Result")
                 detection_info = gr.JSON(label="Detections")
 
-        def run_inference(image):
+        def toggle_model_source(source):
+            """Toggle between pretrained and custom model inputs."""
+            if source == "Pretrained Model":
+                return gr.update(visible=True), gr.update(visible=False)
+            else:
+                return gr.update(visible=False), gr.update(visible=True)
+
+        def run_inference(image, model_type, pretrained, custom_model, conf):
             if image is None:
                 return None, {"error": "No image provided"}
 
-            # Load model (using default YOLOv8n for demo)
-            # In production, this should be configurable
+            # Determine model path
+            if model_type == "Pretrained Model":
+                model_path = pretrained
+            else:
+                if custom_model is None:
+                    return None, {"error": "Please upload a custom model"}
+                model_path = custom_model.name
+
+            logger.info(f"Running inference with model: {model_path}")
+
             try:
-                engine = create_engine("yolov8n.pt")
+                engine = create_engine(model_path)
                 engine.load_model()
                 result: DetectionResult = engine.predict(image)
 
@@ -70,17 +128,25 @@ def create_inference_tab() -> gr.Tab:
                             "bbox": det.bbox,
                         }
                         for det in result.detections
+                        if det.confidence >= conf
                     ],
                 }
                 return output_img, detections_dict
 
             except Exception as e:
+                logger.error(f"Inference failed: {e}")
                 return None, {"error": str(e)}
 
         detect_btn.click(
             fn=run_inference,
-            inputs=[input_image],
+            inputs=[input_image, model_type, pretrained_model, custom_model, conf_threshold],
             outputs=[output_image, detection_info],
+        )
+
+        model_type.change(
+            fn=toggle_model_source,
+            inputs=[model_type],
+            outputs=[pretrained_model, custom_model],
         )
 
     return tab
@@ -103,13 +169,20 @@ def create_training_tab() -> gr.Tab:
                     imgsz = gr.Slider(320, 1280, value=640, step=32, label="Image Size")
                     lr0 = gr.Number(value=0.01, label="Initial Learning Rate")
 
+                    # Output directory setting
+                    output_dir = gr.Textbox(
+                        label="Output Directory",
+                        placeholder="Leave empty for default (runs/detect/train)",
+                        value="",
+                    )
+
                 train_btn = gr.Button("Start Training", variant="primary")
 
             with gr.Column():
-                training_status = gr.Textbox(label="Status")
+                training_status = gr.Textbox(label="Status", lines=3)
                 training_output = gr.File(label="Trained Model")
 
-        def run_training(dataset_yaml_file, pretrained_file, epochs, batch_size, imgsz, lr0):
+        def run_training(dataset_yaml_file, pretrained_file, epochs, batch_size, imgsz, lr0, output):
             try:
                 # Create training config
                 config = TrainingConfig(
@@ -122,6 +195,9 @@ def create_training_tab() -> gr.Tab:
                 if pretrained_file:
                     config.model = pretrained_file.name
 
+                if output:
+                    config.project = output
+
                 # Initialize trainer
                 trainer = Trainer(config)
 
@@ -130,19 +206,23 @@ def create_training_tab() -> gr.Tab:
                 if not dataset_path:
                     return "Error: Dataset YAML is required", None
 
+                logger.info(f"Starting training with config: {config.to_dict()}")
                 result = trainer.train(data_yaml=dataset_path)
 
                 if result.success:
-                    return f"Training completed! Model saved to: {result.model_path}", result.model_path
+                    logger.info(f"Training completed. Model saved to: {result.model_path}")
+                    return f"Training completed!\n\nModel saved to:\n{result.model_path}", result.model_path
                 else:
-                    return f"Training failed: {result.error}", None
+                    logger.error(f"Training failed: {result.error}")
+                    return f"Training failed:\n{result.error}", None
 
             except Exception as e:
+                logger.error(f"Training error: {e}")
                 return f"Error: {str(e)}", None
 
         train_btn.click(
             fn=run_training,
-            inputs=[dataset_yaml, pretrained_model, epochs, batch_size, imgsz, lr0],
+            inputs=[dataset_yaml, pretrained_model, epochs, batch_size, imgsz, lr0, output_dir],
             outputs=[training_status, training_output],
         )
 
@@ -166,53 +246,98 @@ def create_export_tab() -> gr.Tab:
                 )
                 dynamic_axes = gr.Checkbox(value=True, label="Enable Dynamic Axes")
                 simplify = gr.Checkbox(value=True, label="Simplify Model")
+
+                # Custom output filename
+                output_filename = gr.Textbox(
+                    label="Output Filename (optional)",
+                    placeholder="e.g., my-model-rk3588-export.onnx",
+                    value="",
+                )
+
                 export_btn = gr.Button("Export to ONNX", variant="primary")
 
             with gr.Column():
-                export_status = gr.Textbox(label="Status")
+                export_status = gr.Textbox(label="Status", lines=3)
                 exported_file = gr.File(label="Exported Model")
 
-        def run_export(model, opset, dynamic, simplify):
+        def run_export(model, opset, dynamic, simplify, output_filename):
             try:
                 if not model:
                     return "Error: Please upload a model file", None
 
                 exporter = ONNXExporter(model.name)
-                onnx_path = exporter.export(
-                    opset=int(opset),
-                    dynamic=dynamic,
-                    simplify=simplify,
-                )
 
-                return f"Exported successfully: {onnx_path}", onnx_path
+                # Handle custom output filename
+                export_kwargs = {
+                    "opset": int(opset),
+                    "dynamic": dynamic,
+                    "simplify": simplify,
+                }
+
+                if output_filename:
+                    # Ensure .onnx extension
+                    if not output_filename.endswith(".onnx"):
+                        output_filename += ".onnx"
+                    export_kwargs["output_filename"] = output_filename
+
+                onnx_path = exporter.export(**export_kwargs)
+
+                logger.info(f"Model exported to: {onnx_path}")
+                return f"Exported successfully!\n\nOutput:\n{onnx_path}", onnx_path
 
             except Exception as e:
+                logger.error(f"Export failed: {e}")
                 return f"Export failed: {str(e)}", None
 
         export_btn.click(
             fn=run_export,
-            inputs=[model_file, opset_version, dynamic_axes, simplify],
+            inputs=[model_file, opset_version, dynamic_axes, simplify, output_filename],
             outputs=[export_status, exported_file],
         )
 
         # RK3588 quick export
         gr.Markdown("### Quick Export for RK3588")
+        gr.Markdown("Exports with recommended settings for RK3588 (opset=11, dynamic, simplified)")
+
+        rk3588_filename = gr.Textbox(
+            label="Output Filename",
+            placeholder="model-rk3588-export.onnx",
+            value="",
+        )
+
         rk3588_btn = gr.Button("Export for RK3588 (Recommended Settings)")
 
-        def run_rk3588_export(model):
+        def run_rk3588_export(model, filename):
             try:
                 if not model:
                     return "Error: Please upload a model file", None
 
-                onnx_path = prepare_for_rk3588(model.name)
-                return f"RK3588-ready ONNX exported: {onnx_path}", onnx_path
+                # Generate default filename if not provided
+                if not filename:
+                    model_name = Path(model.name).stem
+                    filename = f"{model_name}-rk3588-export.onnx"
+                elif not filename.endswith(".onnx"):
+                    filename += ".onnx"
+
+                # Use the prepare_for_rk3588 function but with custom output
+                exporter = ONNXExporter(model.name)
+                onnx_path = exporter.export(
+                    opset=11,
+                    dynamic=True,
+                    simplify=True,
+                    output_filename=filename,
+                )
+
+                logger.info(f"RK3588 model exported to: {onnx_path}")
+                return f"RK3588-ready ONNX exported!\n\nOutput:\n{onnx_path}", onnx_path
 
             except Exception as e:
+                logger.error(f"RK3588 export failed: {e}")
                 return f"Export failed: {str(e)}", None
 
         rk3588_btn.click(
             fn=run_rk3588_export,
-            inputs=[model_file],
+            inputs=[model_file, rk3588_filename],
             outputs=[export_status, exported_file],
         )
 
@@ -224,7 +349,7 @@ def create_webui() -> gr.Blocks:
     with gr.Blocks(title="YOLO Demo - Object Detection") as app:
         gr.Markdown(
             """
-            # 🎯 YOLO Demo - Real-time Object Detection
+            # YOLO Demo - Real-time Object Detection
             Lightweight object detection system for edge computing.
             Supports Mac (MPS), NVIDIA (CUDA), and CPU backends.
             """
@@ -234,6 +359,7 @@ def create_webui() -> gr.Blocks:
             create_inference_tab()
             create_training_tab()
             create_export_tab()
+            create_dataset_converter_tab()
 
         gr.Markdown(
             """
@@ -247,7 +373,14 @@ def create_webui() -> gr.Blocks:
 
 def launch(host: str = "0.0.0.0", port: int = 7860, **kwargs: Any) -> None:
     """Launch the WebUI."""
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
     app = create_webui()
+    logger.info(f"Launching WebUI at http://{host}:{port}")
     app.launch(server_name=host, server_port=port, **kwargs)
 
 

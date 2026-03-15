@@ -1,9 +1,13 @@
 """ONNX export module for YOLO models."""
 
+import logging
+import shutil
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from ultralytics import YOLO
+
+logger = logging.getLogger(__name__)
 
 
 class ONNXExporter:
@@ -38,6 +42,7 @@ class ONNXExporter:
         dynamic: bool = True,
         simplify: bool = True,
         include: list[str] | None = None,
+        output_filename: str | None = None,
         **kwargs: Any,
     ) -> str:
         """
@@ -49,6 +54,7 @@ class ONNXExporter:
             dynamic: Enable dynamic axes for batch and image size.
             simplify: Simplify the exported ONNX model.
             include: Additional formats to include (e.g., ['onnx', 'openvino']).
+            output_filename: Custom output filename (e.g., 'model-rk3588-export.onnx').
             **kwargs: Additional arguments passed to ultralytics export.
 
         Returns:
@@ -83,6 +89,16 @@ class ONNXExporter:
         export_kwargs.update(kwargs)
 
         onnx_path = self.model.export(**export_kwargs)
+        onnx_path = Path(onnx_path)
+
+        # Rename if custom filename is provided
+        if output_filename:
+            new_path = onnx_path.parent / output_filename
+            if new_path != onnx_path:
+                shutil.move(str(onnx_path), str(new_path))
+                logger.info(f"Renamed exported model to: {new_path}")
+                return str(new_path)
+
         return str(onnx_path)
 
     @staticmethod
