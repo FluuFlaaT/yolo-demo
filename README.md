@@ -361,40 +361,24 @@ curl -X POST "http://localhost:8000/api/v1/export/onnx" \
 
 ### RK3588 (Rockchip NPU)
 
-1. 导出 ONNX 模型
+**快速开始**: 查看 [RKNN 快速开始指南](docs/RKNN_QUICKSTART.md) 了解完整流程。
+
+**详细文档**: [RK3588 部署指南](docs/RK3588_DEPLOYMENT.md)
+
+#### 快速转换流程
 
 ```bash
+# 1. 导出 ONNX 模型
 uv run yolo-demo export model.pt --rk3588
-```
 
-2. 在 RK3588 设备上转换为 RKNN 格式
+# 2. 使用 Docker 转换为 RKNN（适用于 Mac/Windows/Linux）
+./docker/build_and_convert.sh model-rk3588-export.onnx
 
-```python
-from rknn.api import RKNN
+# 3. 传输到 RK3588 设备
+scp rknn_models/model.rknn user@rk3588:/path/to/
 
-rknn = RKNN()
-
-# 配置
-rknn.config(target_platform='rk3588', quantization=True)
-
-# 加载 ONNX 模型
-rknn.load_onnx(model='model-rk3588-export.onnx')
-
-# 构建并导出
-rknn.build(do_quantization=True, dataset='calib_dataset.txt')
-rknn.export_rknn('model.rknn')
-```
-
-3. 在设备上运行推理
-
-```python
-from rknn.api import RKNN
-
-rknn = RKNN()
-rknn.load_rknn('model.rknn')
-
-# 推理
-outputs = rknn.inference(inputs=[image])
+# 4. 在设备上运行推理
+python3 inference_rknn.py image.jpg model.rknn -o output.jpg
 ```
 
 ### NVIDIA Jetson (TensorRT)
