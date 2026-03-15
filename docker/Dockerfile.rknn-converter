@@ -1,0 +1,62 @@
+# Dockerfile for RKNN conversion
+# Runs on Linux x86_64 with Python 3.8 (rknn-toolkit2 requirements)
+
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.8 \
+    python3.8-dev \
+    python3-pip \
+    python3.8-venv \
+    libopencv-dev \
+    libhdf5-dev \
+    libatlas-base-dev \
+    libopenblas-dev \
+    libffi-dev \
+    libxml2-dev \
+    libxslt-dev \
+    wget \
+    git \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create virtual environment with Python 3.8
+RUN python3.8 -m venv /opt/rknn_env
+
+# Activate virtual environment and install dependencies
+RUN /opt/rknn_env/bin/pip install --upgrade pip setuptools wheel
+
+# Install rknn-toolkit2 (official Rockchip version)
+# Note: You may need to download the wheel manually if pip install fails
+RUN /opt/rknn_env/bin/pip install \
+    rknn-toolkit2==1.5.0 \
+    --extra-index-url https://test.pypi.org/simple/ \
+    || echo "rknn-toolkit2 installation via pip failed, will try manual installation"
+
+# Alternative: Install from local wheel if provided
+# Copy wheel to /wheels/ directory and uncomment:
+# COPY wheels/*.whl /wheels/
+# RUN /opt/rknn_env/bin/pip install /wheels/*.whl
+
+# Install ONNX for model validation
+RUN /opt/rknn_env/bin/pip install onnx onnxruntime
+
+# Create working directory
+WORKDIR /workspace
+
+# Copy conversion script
+COPY scripts/convert_to_rknn.py /workspace/convert_to_rknn.py
+
+# Create directories for input/output
+RUN mkdir -p /workspace/models /workspace/logs /workspace/dataset
+
+# Set entrypoint
+ENTRYPOINT ["/opt/rknn_env/bin/python", "/workspace/convert_to_rknn.py"]
+
+# Default arguments (can be overridden)
+CMD ["--help"]

@@ -30,6 +30,7 @@ dev = [
 yolo-demo = "yolo_demo.main:cli"
 yolo-demo-webui = "yolo_demo.ui.webui:launch"
 yolo-demo-api = "yolo_demo.api.app:serve"
+yolo-demo-convert-rknn = "yolo_demo.export.rknn_converter:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -32,6 +32,12 @@ runs/
 weights/
 datasets/
 
+# RKNN conversion
+rknn_models/
+docker/logs/
+calib_images/
+calib.txt
+
 # Logs
 *.log
 logs/
