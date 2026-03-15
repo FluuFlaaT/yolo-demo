@@ -1,5 +1,6 @@
 """RKNN backend for RK3588 NPU inference."""
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -7,9 +8,52 @@ from typing import Any
 
 import numpy as np
 
+import onnx
 from yolo_demo.inference.engine import Detection, DetectionResult, InferenceEngine
 
 logger = logging.getLogger(__name__)
+
+
+def load_class_names_from_onnx(onnx_path: str | Path) -> dict[int, str] | None:
+    """
+    Load class names from ONNX model metadata.
+
+    Args:
+        onnx_path: Path to ONNX model file.
+
+    Returns:
+        Dictionary mapping class indices to class names, or None if not found.
+    """
+    try:
+        import onnx
+    except ImportError:
+        logger.warning("onnx not installed, cannot load class names from metadata")
+        return None
+
+    try:
+        onnx_path = Path(onnx_path)
+        if not onnx_path.exists():
+            return None
+
+        model = onnx.load(str(onnx_path))
+        metadata = {p.key: p.value for p in model.metadata_props}
+
+        if "names" in metadata:
+            names_str = metadata["names"]
+            try:
+                names_dict = json.loads(names_str)
+            except json.JSONDecodeError:
+                try:
+                    names_dict = eval(names_str)
+                except Exception:
+                    logger.warning(f"Could not parse class names: {names_str[:50]}...")
+                    return None
+            return names_dict
+
+        return None
+    except Exception as e:
+        logger.warning(f"Could not load class names from ONNX metadata: {e}")
+        return None
 
 
 class RKNNBackend(InferenceEngine):
@@ -30,6 +74,7 @@ class RKNNBackend(InferenceEngine):
         conf_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         max_det: int = 300,
+        class_names: dict[int, str] | list[str] | None = None,
     ):
         """
         Initialize RKNN backend.
@@ -39,6 +84,7 @@ class RKNNBackend(InferenceEngine):
             conf_threshold: Confidence threshold for detections
             iou_threshold: IoU threshold for NMS
             max_det: Maximum number of detections
+            class_names: Optional class names dict or list. If None, will try to load from ONNX metadata.
         """
         super().__init__(model_path)
         self.conf_threshold = conf_threshold
@@ -47,6 +93,23 @@ class RKNNBackend(InferenceEngine):
         self.input_name = None
         self.input_shape = None
         self._rknn = None
+        self._class_names = None
+        self._init_class_names(class_names)
+
+    def _init_class_names(self, class_names: dict[int, str] | list[str] | None) -> None:
+        """
+        Initialize class names.
+
+        Args:
+            class_names: Optional class names dict or list.
+        """
+        if class_names is not None:
+            if isinstance(class_names, list):
+                self._class_names = {i: name for i, name in enumerate(class_names)}
+            else:
+                self._class_names = class_names
+        else:
+            self._class_names = None
 
     def load_model(self) -> None:
         """Load RKNN model."""
@@ -79,6 +142,15 @@ class RKNNBackend(InferenceEngine):
 
         self.input_name = inputs[0]["name"]
         self.input_shape = inputs[0]["shape"]  # [N, C, H, W]
+
+        # Auto-load class names from ONNX if not provided
+        if self._class_names is None:
+            onnx_path = model_path.with_suffix(".onnx")
+            if onnx_path.exists():
+                loaded_names = load_class_names_from_onnx(onnx_path)
+                if loaded_names:
+                    self._class_names = loaded_names
+                    logger.info(f"Loaded {len(loaded_names)} class names from ONNX metadata")
 
         logger.info(f"Input name: {self.input_name}")
         logger.info(f"Input shape: {self.input_shape}")
@@ -228,15 +300,23 @@ class RKNNBackend(InferenceEngine):
         # Build detection list
         detections = []
         for idx in indices:
+            cid = int(class_ids[idx])
+            class_name = self._get_class_name(cid)
             det = Detection(
                 bbox=boxes[idx].tolist(),
                 confidence=float(scores[idx]),
-                class_id=int(class_ids[idx]),
-                class_name=str(class_ids[idx]),  # Will be mapped by caller
+                class_id=cid,
+                class_name=class_name,
             )
             detections.append(det)
 
         return detections
+
+    def _get_class_name(self, class_id: int) -> str:
+        """Get class name for a given class ID."""
+        if self._class_names is not None:
+            return self._class_names.get(class_id, str(class_id))
+        return str(class_id)
 
     def _nms(
         self,

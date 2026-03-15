@@ -1,13 +1,47 @@
 """ONNX export module for YOLO models."""
 
+import json
 import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
+import onnx
 from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_onnx_metadata(onnx_path: Path, model: YOLO) -> None:
+    """
+    Ensure ONNX model has class names in metadata_props.
+
+    Args:
+        onnx_path: Path to the exported ONNX file.
+        model: The YOLO model used for export.
+    """
+    try:
+        onnx_model = onnx.load(str(onnx_path))
+    except Exception as e:
+        logger.warning(f"Could not load ONNX model to check metadata: {e}")
+        return
+
+    existing_props = {p.key: p.value for p in onnx_model.metadata_props}
+
+    if "names" not in existing_props or not existing_props.get("names"):
+        if hasattr(model, "names") and model.names:
+            names_dict = model.names
+            names_str = json.dumps(names_dict, ensure_ascii=False)
+
+            new_prop = onnx.StringStringEntryProto()
+            new_prop.key = "names"
+            new_prop.value = names_str
+            onnx_model.metadata_props.append(new_prop)
+
+            onnx.save(onnx_model, str(onnx_path))
+            logger.info(f"Added class names to ONNX metadata: {len(names_dict)} classes")
+        else:
+            logger.warning("Model has no names attribute, cannot add to metadata")
 
 
 class ONNXExporter:
@@ -90,6 +124,9 @@ class ONNXExporter:
 
         onnx_path = self.model.export(**export_kwargs)
         onnx_path = Path(onnx_path)
+
+        if self.model is not None:
+            _ensure_onnx_metadata(onnx_path, self.model)
 
         # Rename if custom filename is provided
         if output_filename:
