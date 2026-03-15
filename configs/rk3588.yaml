@@ -1,0 +1,31 @@
+# RK3588 edge device deployment configuration
+# Optimized for Rockchip RK3588 NPU
+
+# Model settings - use smaller models for edge
+model: yolov8n.pt
+
+# Image size - balance accuracy and performance
+imgsz: 640
+
+# Batch size - typically 1 for real-time inference
+batch: 1
+
+# ONNX export settings for RKNN compatibility
+export:
+  opset: 11
+  dynamic: true
+  simplify: true
+  half: false  # RKNN uses FP16 internally
+
+# RKNN conversion settings (for reference)
+rknn:
+  target_platform: rk3588
+  quantization: true
+  quant_config: null  # Path to quantization config
+  optimization_level: 3
+
+# Inference settings
+inference:
+  conf_threshold: 0.25
+  iou_threshold: 0.45
+  max_det: 300
