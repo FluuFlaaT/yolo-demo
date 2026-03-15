@@ -1,10 +1,14 @@
 """Main CLI entry point for YOLO Demo."""
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
 import yolo_demo
+from yolo_demo.utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -16,6 +20,17 @@ def main():
         "--version",
         action="version",
         version=f"%(prog)s {yolo_demo.__version__}",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose output",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Path to log file",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -73,6 +88,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Setup logging
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    setup_logging(level=log_level, log_file=args.log_file)
+
     if args.command is None:
         parser.print_help()
         sys.exit(0)
@@ -99,26 +118,26 @@ def run_inference(image: str, model: str, output: str | None, conf: float):
     # Load image
     img = cv2.imread(image)
     if img is None:
-        print(f"Error: Could not read image: {image}")
+        logger.error(f"Could not read image: {image}")
         sys.exit(1)
 
     # Convert BGR to RGB
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     # Run inference
-    print(f"Loading model: {model}")
+    logger.info(f"Loading model: {model}")
     engine = create_engine(model)
     engine.load_model()
 
-    print(f"Running inference on: {image}")
-    print(f"Device: {engine.get_device_info()['backend']}")
+    logger.info(f"Running inference on: {image}")
+    logger.info(f"Device: {engine.get_device_info()['backend']}")
 
     result = engine.predict(img_rgb)
 
-    print(f"\nInference time: {result.inference_time_ms:.2f}ms")
-    print(f"Detected {len(result.detections)} objects:")
+    logger.info(f"Inference time: {result.inference_time_ms:.2f}ms")
+    logger.info(f"Detected {len(result.detections)} objects:")
     for det in result.detections:
-        print(f"  - {det.class_name}: {det.confidence:.2f} [{det.bbox}]")
+        logger.info(f"  - {det.class_name}: {det.confidence:.2f} [{det.bbox}]")
 
     # Draw and save if output specified
     if output:
@@ -129,7 +148,7 @@ def run_inference(image: str, model: str, output: str | None, conf: float):
             cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         cv2.imwrite(output, img)
-        print(f"\nOutput saved to: {output}")
+        logger.info(f"Output saved to: {output}")
 
 
 def run_training(
@@ -148,17 +167,17 @@ def run_training(
     )
 
     trainer = Trainer(config)
-    print(f"Starting training with {model}...")
-    print(f"Dataset: {data}")
-    print(f"Epochs: {epochs}, Batch: {batch}, Image size: {imgsz}")
+    logger.info(f"Starting training with {model}...")
+    logger.info(f"Dataset: {data}")
+    logger.info(f"Epochs: {epochs}, Batch: {batch}, Image size: {imgsz}")
 
     result = trainer.train()
 
     if result.success:
-        print(f"\nTraining completed!")
-        print(f"Model saved to: {result.model_path}")
+        logger.info("Training completed!")
+        logger.info(f"Model saved to: {result.model_path}")
     else:
-        print(f"\nTraining failed: {result.error}")
+        logger.error(f"Training failed: {result.error}")
         sys.exit(1)
 
 
@@ -167,14 +186,14 @@ def run_export(model: str, output: str | None, opset: int, rk3588: bool):
     from yolo_demo.export.onnx_exporter import ONNXExporter, prepare_for_rk3588
 
     if rk3588:
-        print(f"Exporting {model} for RK3588...")
+        logger.info(f"Exporting {model} for RK3588...")
         onnx_path = prepare_for_rk3588(model, output)
     else:
-        print(f"Exporting {model} to ONNX (opset={opset})...")
+        logger.info(f"Exporting {model} to ONNX (opset={opset})...")
         exporter = ONNXExporter(model)
         onnx_path = exporter.export(output=output, opset=opset)
 
-    print(f"Exported to: {onnx_path}")
+    logger.info(f"Exported to: {onnx_path}")
 
 
 def run_webui(host: str, port: int, share: bool):
@@ -182,7 +201,7 @@ def run_webui(host: str, port: int, share: bool):
     from yolo_demo.ui.webui import create_webui
 
     app = create_webui()
-    print(f"Launching WebUI at http://{host}:{port}")
+    logger.info(f"Launching WebUI at http://{host}:{port}")
     app.launch(server_name=host, server_port=port, share=share)
 
 
@@ -190,7 +209,7 @@ def run_api(host: str, port: int, reload: bool):
     """Launch API server."""
     import uvicorn
 
-    print(f"Launching API at http://{host}:{port}")
+    logger.info(f"Launching API at http://{host}:{port}")
     uvicorn.run("yolo_demo.api.app:app", host=host, port=port, reload=reload)
 
 
