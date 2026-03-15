@@ -8,6 +8,7 @@
 |------|------|
 | `Dockerfile.rknn-converter` | Docker 镜像定义，包含 rknn-toolkit2 环境 |
 | `build_and_convert.sh` | 一键构建镜像并运行转换的脚本 |
+| `validate.sh` | RKNN 模型正确性验证脚本（CPU 模拟） |
 | `logs/` | 转换日志输出目录 |
 
 ## 使用方法

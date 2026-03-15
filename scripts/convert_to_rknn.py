@@ -23,15 +23,13 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
 
@@ -58,7 +56,7 @@ class RKNNConverter:
 
     def load_onnx(
         self,
-        onnx_path: str | Path,
+        onnx_path: Union[str, Path],
         check_model: bool = True,
     ) -> bool:
         """
@@ -66,7 +64,7 @@ class RKNNConverter:
 
         Args:
             onnx_path: Path to ONNX model file
-            check_model: Whether to check ONNX model validity
+            check_model: Whether to check ONNX model validity (deprecated in rknn-toolkit2 2.x)
 
         Returns:
             True if loaded successfully
@@ -76,7 +74,7 @@ class RKNNConverter:
         except ImportError as e:
             logger.error(
                 "rknn-toolkit2 not installed. Please install on Linux x86_64:\n"
-                "  pip install rknn-toolkit2==1.5.0"
+                "  pip install rknn-toolkit2==2.3.2"
             )
             raise e
 
@@ -90,27 +88,39 @@ class RKNNConverter:
 
         # Configure for target platform
         logger.info(f"Configuring for target platform: {self.target_platform}")
+
+        # rknn-toolkit2 2.x API uses quantized_dtype with specific values:
+        # - 'w8a8': INT8 weights and activations (full quantization)
+        # - 'w8a16': INT8 weights, FP16 activations
+        # - 'w16a16i': FP16 weights and activations
+        # - 'w16a16i_dfp': FP16 default (highest precision)
+        # - 'w4a16': INT4 weights, FP16 activations
+        if self.quantization_enabled:
+            quant_dtype = "w8a16"  # INT8 weights + FP16 activations
+            logger.info("Using w8a16 quantization (INT8 weights + FP16 activations)")
+        else:
+            quant_dtype = "w16a16i"  # FP16 (default for rknn-toolkit2 2.x)
+            logger.info("Using w16a16i (FP16) - no quantization")
+
         self.rknn.config(
             target_platform=self.target_platform,
-            quantization=self.quantization_enabled,
+            quantized_dtype=quant_dtype,
             optimization_level=3,  # Default optimization level
+            # dynamic_input format: [[[batch, channels, H, W]], ...] - one max shape per input
+            # Use max supported size for YOLO models
+            dynamic_input=[[[1, 3, 1280, 1280]]],
         )
 
-        # Load ONNX model
-        load_success = self.rknn.load_onnx(
-            model=str(onnx_path),
-            check_model=check_model,
-        )
-
-        if load_success != 0:
-            raise RuntimeError("Failed to load ONNX model")
+        # Load ONNX model (rknn-toolkit2 2.x removed check_model parameter)
+        logger.info(f"Loading ONNX model...")
+        self.rknn.load_onnx(model=str(onnx_path))
 
         logger.info("ONNX model loaded successfully")
         return True
 
     def build(
         self,
-        dataset: Optional[str | Path] = None,
+        dataset: Optional[Union[str, Path]] = None,
         do_quantization: bool = False,
         calibration_iterations: int = 1000,
     ) -> bool:
@@ -160,7 +170,7 @@ class RKNNConverter:
 
     def export_rknn(
         self,
-        output_path: str | Path,
+        output_path: Union[str, Path],
         cleanup: bool = True,
     ) -> str:
         """
@@ -200,10 +210,10 @@ class RKNNConverter:
 
     def convert(
         self,
-        onnx_path: str | Path,
-        output_path: str | Path,
+        onnx_path: Union[str, Path],
+        output_path: Union[str, Path],
         do_quantization: bool = False,
-        dataset: Optional[str | Path] = None,
+        dataset: Optional[Union[str, Path]] = None,
     ) -> str:
         """
         Complete conversion pipeline.
@@ -255,7 +265,7 @@ class RKNNConverter:
             logger.info("RKNN resources released")
 
 
-def validate_onnx(onnx_path: str | Path) -> bool:
+def validate_onnx(onnx_path: Union[str, Path]) -> bool:
     """
     Validate ONNX model structure.
 
@@ -290,54 +300,38 @@ def validate_onnx(onnx_path: str | Path) -> bool:
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Convert ONNX model to RKNN format for RK3588"
-    )
+    parser = argparse.ArgumentParser(description="Convert ONNX model to RKNN format for RK3588")
+    parser.add_argument("onnx_model", type=str, help="Path to ONNX model file")
     parser.add_argument(
-        "onnx_model",
-        type=str,
-        help="Path to ONNX model file"
-    )
-    parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         type=str,
         default=None,
-        help="Output RKNN model path (default: <model_name>.rknn)"
+        help="Output RKNN model path (default: <model_name>.rknn)",
     )
     parser.add_argument(
         "--quantize",
         action="store_true",
-        help="Enable INT8 quantization (requires calibration dataset)"
+        help="Enable INT8 quantization (requires calibration dataset)",
     )
     parser.add_argument(
         "--dataset",
         type=str,
         default=None,
-        help="Path to calibration dataset file (required if --quantize)"
+        help="Path to calibration dataset file (required if --quantize)",
     )
     parser.add_argument(
         "--platform",
         type=str,
         default="rk3588",
         choices=["rk3588", "rk3568", "rk3566", "rv1126", "rv1109"],
-        help="Target RKNN platform"
+        help="Target RKNN platform",
     )
     parser.add_argument(
-        "--validate",
-        action="store_true",
-        help="Validate ONNX model before conversion"
+        "--validate", action="store_true", help="Validate ONNX model before conversion"
     )
-    parser.add_argument(
-        "--log-file",
-        type=str,
-        default=None,
-        help="Path to log file"
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose output"
-    )
+    parser.add_argument("--log-file", type=str, default=None, help="Path to log file")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
 
     args = parser.parse_args()
 
