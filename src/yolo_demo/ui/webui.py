@@ -1,75 +1,59 @@
 """Gradio WebUI for YOLO Demo."""
 
 import logging
-import queue
+import os
 import shutil
 import tempfile
-import threading
 from pathlib import Path
 from typing import Any, Generator, Optional
 
+import gradio as gr  # noqa: E402
 
+from ..export import RKNN_SUPPORTED_PLATFORMS  # noqa: E402
+from ..inference import (  # noqa: E402
+    Detection,
+    create_engine,
+    get_available_backend,
+)
+from .dataset_converter import create_dataset_converter_tab  # noqa: E402
+from .services import (
+    TrainingJobConfig,
+    TrainingSessionManager,
+    check_rknn_availability,
+    export_onnx_to_rknn,
+    export_pt_to_rknn,
+    format_detections,
+    resolve_model_path,
+)
+
+
+# ── Compatibility patch ──────────────────────────────────────────────────────
 # Apply gradio_client compatibility patch for Pydantic v2
 def _patch_gradio_client():
     """Patch gradio_client to handle Pydantic v2 schemas with boolean additionalProperties."""
     try:
         import gradio_client.utils as utils
 
-        original_json_schema_to_python_type = utils._json_schema_to_python_type
+        original = utils._json_schema_to_python_type
 
         def patched_json_schema_to_python_type(schema, defs=None):
-            """Patched version that handles boolean additionalProperties."""
             if not isinstance(schema, dict):
                 if schema is True:
                     return "Any"
                 elif schema is False:
                     return "None"
                 return str(schema)
-            return original_json_schema_to_python_type(schema, defs)
+            return original(schema, defs)
 
         utils._json_schema_to_python_type = patched_json_schema_to_python_type
-    except Exception:
-        pass  # Patching failed, but continue anyway
-
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "Failed to patch gradio_client for Pydantic v2: %s", e
+        )
 
 _patch_gradio_client()
 
-import gradio as gr  # noqa: E402
-
-from ..export import pt_to_rknn  # noqa: E402
-from ..inference import (  # noqa: E402
-    Detection,
-    DetectionResult,
-    create_engine,
-    get_available_backend,
-)
-from ..training.trainer import Trainer, TrainingConfig  # noqa: E402
-from .dataset_converter import create_dataset_converter_tab  # noqa: E402
-
-# Module-level state for the training thread/stop mechanism (single-user demo)
-_stop_event: threading.Event = threading.Event()
-_train_thread: Optional[threading.Thread] = None
-
 logger = logging.getLogger(__name__)
-
-
-class _QueueLogHandler(logging.Handler):
-    """Logging handler that forwards formatted records into a queue.Queue.
-
-    Log records are put as plain strings.  The training thread signals
-    completion by putting a tuple  ("done", model_path)  or
-    ("error", message)  into the same queue.
-    """
-
-    def __init__(self, q: queue.Queue) -> None:
-        super().__init__()
-        self.q = q
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            self.q.put_nowait(self.format(record) + "\n")
-        except Exception:
-            self.handleError(record)
 
 
 def draw_detections(image, detections: list[Detection]) -> Any:
@@ -82,16 +66,14 @@ def draw_detections(image, detections: list[Detection]) -> Any:
     img = image.copy()
     for det in detections:
         x1, y1, x2, y2 = map(int, det.bbox)
-        # Draw box
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        # Draw label
         label = f"{det.class_name}: {det.confidence:.2f}"
         cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     return img
 
 
 def create_inference_tab() -> gr.Tab:
-    """Create the inference tab."""
+    """Create the inference tab using InferenceService."""
     backend = get_available_backend()
 
     with gr.Tab("Inference", id="inference") as tab:
@@ -101,82 +83,48 @@ def create_inference_tab() -> gr.Tab:
         with gr.Row():
             with gr.Column():
                 input_image = gr.Image(label="Input Image", type="numpy")
-
-                # Model selection
                 model_name = gr.Textbox(
                     label="Model Name",
-                    placeholder="e.g., yolov8n.pt, yolo26s, custom-model",
+                    placeholder="e.g., yolov8n.pt",
                     value="yolov8n.pt",
                 )
-
-                custom_model = gr.File(
-                    label="Or Upload Custom Model (.pt)",
-                )
-
+                custom_model = gr.File(label="Or Upload Custom Model (.pt)")
                 conf_threshold = gr.Slider(
-                    minimum=0.01,
-                    maximum=1.0,
-                    value=0.25,
-                    step=0.01,
+                    minimum=0.01, maximum=1.0, value=0.25, step=0.01,
                     label="Confidence Threshold",
                 )
-
                 detect_btn = gr.Button("Detect Objects", variant="primary")
 
             with gr.Column():
                 output_image = gr.Image(label="Detection Result")
                 detection_info = gr.JSON(label="Detections")
 
-        def toggle_model_source(source):
-            """Toggle between pretrained and custom model inputs."""
-            if source == "Pretrained Model":
-                return gr.update(visible=True), gr.update(visible=False)
-            else:
-                return gr.update(visible=False), gr.update(visible=True)
-
-        def run_inference(image, model_name, custom_model, conf):
+        def _on_inference(image, model_name_val, custom_file, conf):
             if image is None:
                 return None, {"error": "No image provided"}
 
-            # Determine model path - prefer custom model file, then text input
-            if custom_model is not None:
-                model_path = custom_model.name
-            elif model_name:
-                model_path = model_name
-            else:
-                return None, {"error": "Please enter a model name or upload a custom model"}
+            custom_path = custom_file.name if custom_file is not None else None
 
-            logger.info(f"Running inference with model: {model_path}")
+            try:
+                model_path = resolve_model_path(model_name_val, custom_path)
+            except ValueError as e:
+                return None, {"error": str(e)}
+
+            logger.info("Running inference with model: %s", model_path)
 
             try:
                 engine = create_engine(model_path)
                 engine.load_model()
-                result: DetectionResult = engine.predict(image)
-
+                result = engine.predict(image)
                 output_img = draw_detections(image, result.detections)
-
-                detections_dict = {
-                    "count": len(result.detections),
-                    "inference_time_ms": round(result.inference_time_ms, 2),
-                    "device": result.device,
-                    "detections": [
-                        {
-                            "class": det.class_name,
-                            "confidence": round(det.confidence, 3),
-                            "bbox": det.bbox,
-                        }
-                        for det in result.detections
-                        if det.confidence >= conf
-                    ],
-                }
-                return output_img, detections_dict
-
+                info = format_detections(result, conf)
+                return output_img, info
             except Exception as e:
-                logger.error(f"Inference failed: {e}")
+                logger.error("Inference failed: %s", e)
                 return None, {"error": str(e)}
 
         detect_btn.click(
-            fn=run_inference,
+            fn=_on_inference,
             inputs=[input_image, model_name, custom_model, conf_threshold],
             outputs=[output_image, detection_info],
         )
@@ -185,7 +133,7 @@ def create_inference_tab() -> gr.Tab:
 
 
 def create_training_tab() -> gr.Tab:
-    """Create the training tab."""
+    """Create the training tab using TrainingService."""
     with gr.Tab("Training", id="training") as tab:
         gr.Markdown("### Incremental Training")
         gr.Markdown("Upload a dataset in YOLO format and train a custom model")
@@ -193,24 +141,27 @@ def create_training_tab() -> gr.Tab:
         with gr.Row():
             with gr.Column():
                 dataset_yaml = gr.File(label="Dataset YAML (.yaml)")
-
-                # Base model selection
                 base_model_name = gr.Textbox(
                     label="Base Model Name",
-                    placeholder="e.g., yolov8n.pt, yolo26s, custom-model",
+                    placeholder="e.g., yolov8n.pt",
                     value="yolov8n.pt",
                 )
-                base_model_file = gr.File(
-                    label="Or Upload Base Model (.pt)",
-                )
+                base_model_file = gr.File(label="Or Upload Base Model (.pt)")
 
                 with gr.Accordion("Training Parameters", open=False):
+                    device_preset = gr.Dropdown(
+                        choices=[
+                            "Custom", "RK3588", "Jetson Nano", "Jetson Xavier NX",
+                            "Jetson Orin", "Desktop GPU", "CPU (slow)",
+                        ],
+                        value="Custom",
+                        label="Edge Device Preset",
+                        info="Auto-fills parameters for common edge devices",
+                    )
                     epochs = gr.Slider(10, 500, value=100, step=10, label="Epochs")
                     batch_size = gr.Slider(2, 64, value=16, step=2, label="Batch Size")
                     imgsz = gr.Slider(320, 1280, value=640, step=32, label="Image Size")
                     lr0 = gr.Number(value=0.01, label="Initial Learning Rate")
-
-                    # Output directory setting
                     output_dir = gr.Textbox(
                         label="Output Directory",
                         placeholder="Leave empty for default (runs/detect/train)",
@@ -223,172 +174,136 @@ def create_training_tab() -> gr.Tab:
 
             with gr.Column():
                 training_status = gr.Textbox(
-                    label="Status",
-                    lines=20,
-                    max_lines=40,
+                    label="Status", lines=20, max_lines=40,
                     placeholder="Training log will stream here...",
                 )
                 training_output = gr.File(label="Trained Model")
 
-        def run_training(
-            dataset_yaml_file,
-            base_model_name,
-            base_file,
-            epochs_val,
-            batch_size_val,
-            imgsz_val,
-            lr0_val,
-            output,
-        ) -> Generator:
-            global _stop_event, _train_thread
+        session_mgr = TrainingSessionManager(max_concurrent=1)
+        active_job_id: Optional[str] = None
 
-            # Validate inputs
-            if dataset_yaml_file is None:
+        presets = {
+            "RK3588":          dict(epochs=100, batch=8,  imgsz=640, lr0=0.01),
+            "Jetson Nano":     dict(epochs=50,  batch=4,  imgsz=416, lr0=0.01),
+            "Jetson Xavier NX":dict(epochs=100, batch=8,  imgsz=640, lr0=0.01),
+            "Jetson Orin":     dict(epochs=100, batch=16, imgsz=640, lr0=0.01),
+            "Desktop GPU":     dict(epochs=200, batch=16, imgsz=640, lr0=0.01),
+            "CPU (slow)":      dict(epochs=50,  batch=2,  imgsz=320, lr0=0.01),
+        }
+
+        def _apply_preset(preset_name):
+            if preset_name == "Custom":
+                return [gr.update()] * 4
+            p = presets.get(preset_name, {})
+            return [
+                gr.update(value=p.get("epochs", 100)),
+                gr.update(value=p.get("batch", 16)),
+                gr.update(value=p.get("imgsz", 640)),
+                gr.update(value=p.get("lr0", 0.01)),
+            ]
+
+        device_preset.change(
+            fn=_apply_preset,
+            inputs=[device_preset],
+            outputs=[epochs, batch_size, imgsz, lr0],
+        )
+
+        def _on_training(
+            dataset_file, model_name_val, model_file,
+            epochs_val, batch_val, imgsz_val, lr0_val, output_val,
+        ) -> Generator:
+            nonlocal active_job_id
+
+            if dataset_file is None:
                 yield "Error: Dataset YAML is required", None
                 return
 
-            # Determine base model - prefer file upload, then text input
-            if base_file is not None:
-                model_path = base_file.name
-            elif base_model_name:
-                model_path = base_model_name
-            else:
-                yield "Error: Please enter a base model name or upload a model file", None
+            custom_path = model_file.name if model_file is not None else None
+            try:
+                model_path = resolve_model_path(model_name_val, custom_path)
+            except ValueError as e:
+                yield str(e), None
                 return
 
-            # Reset stop signal
-            _stop_event.clear()
-
-            # Single queue: str → log line, tuple → ("done"|"error", payload)
-            msg_queue: queue.Queue = queue.Queue()
-
-            # Attach a log handler to the root logger so every Python logging
-            # call made anywhere in the process flows into the textbox.
-            _log_handler = _QueueLogHandler(msg_queue)
-            _log_handler.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-                    datefmt="%H:%M:%S",
-                )
+            config = TrainingJobConfig(
+                model_path=model_path,
+                dataset_path=dataset_file.name,
+                epochs=int(epochs_val),
+                batch_size=int(batch_val),
+                imgsz=int(imgsz_val),
+                lr0=float(lr0_val),
+                output_dir=output_val or None,
             )
-            _root_logger = logging.getLogger()
-            _root_logger.addHandler(_log_handler)
 
-            def training_thread_fn():
-                try:
-                    config = TrainingConfig(
-                        model=model_path,
-                        epochs=int(epochs_val),
-                        batch=int(batch_size_val),
-                        imgsz=int(imgsz_val),
-                        lr0=float(lr0_val),
-                    )
-                    if output:
-                        config.project = output
+            job_id = session_mgr.submit(config)
+            active_job_id = job_id
+            session = session_mgr.get(job_id)
+            assert session is not None
 
-                    trainer = Trainer(config)
-                    trainer.load_pretrained()
-                    yolo_model = trainer.model
-                    assert yolo_model is not None
-
-                    # Stop callback: set epoch = total epochs for a clean early exit
-                    stop_ev = _stop_event
-
-                    def _on_epoch_end(t):
-                        if stop_ev.is_set():
-                            t.epoch = t.epochs
-                            logger.info("Stop requested — finishing current epoch and exiting.")
-
-                    yolo_model.add_callback("on_train_epoch_end", _on_epoch_end)
-
-                    dataset_path = dataset_yaml_file.name
-                    logger.info(f"Starting training with config: {config.to_dict()}")
-                    result = trainer.train(data_yaml=dataset_path)
-
-                    if result.success:
-                        msg_queue.put(("done", result.model_path or ""))
-                    else:
-                        msg_queue.put(("error", result.error or "Unknown error"))
-
-                except Exception as e:
-                    msg_queue.put(("error", str(e)))
-
-            _train_thread = threading.Thread(target=training_thread_fn, daemon=True)
-            _train_thread.start()
-
-            log_lines: list[str] = []
+            log_lines = []
 
             try:
-                while _train_thread.is_alive() or not msg_queue.empty():
-                    try:
-                        msg = msg_queue.get(timeout=0.5)
-                    except queue.Empty:
+                while session.is_active() or session.has_messages():
+                    msg = session.poll(timeout=0.5)
+                    if msg is None:
                         continue
 
-                    if isinstance(msg, tuple):
-                        kind, payload = msg
-                        if kind == "done":
-                            final_model_path = payload.strip()
-                            serve_path = None
-                            src = Path(final_model_path)
-                            try:
-                                if src.exists():
-                                    import shutil
-
-                                    dst = Path(tempfile.gettempdir()) / "yolo_trained_best.pt"
-                                    shutil.copy2(src, dst)
-                                    serve_path = str(dst)
-                                    logger.info(f"Model copied to temp for download: {dst}")
-                                else:
-                                    logger.warning(
-                                        f"Expected model not found at: {final_model_path}"
-                                    )
-                            except Exception as copy_err:
-                                logger.warning(f"Could not copy model: {copy_err}")
-                            logger.info(f"Training completed. Model saved to: {final_model_path}")
-                            if serve_path is None:
-                                logger.warning("File not available for download — see path above.")
-                            yield "".join(log_lines), serve_path
-                            return
-                        else:  # "error"
-                            logger.error(f"Training failed: {payload}")
-                            yield "".join(log_lines), None
-                            return
-                    else:
+                    if isinstance(msg, str):
                         log_lines.append(msg)
                         yield "".join(log_lines), None
-
+                    elif isinstance(msg, tuple):
+                        kind, payload = msg
+                        if kind == "done":
+                            final_path = payload.strip()
+                            serve_path = _copy_model_to_temp(final_path)
+                            yield "".join(log_lines), serve_path
+                            return
+                        else:
+                            logger.error("Training failed: %s", payload)
+                            yield "".join(log_lines), None
+                            return
             finally:
-                _root_logger.removeHandler(_log_handler)
+                session_mgr.on_job_finished(job_id)
+                if active_job_id == job_id:
+                    active_job_id = None
 
             yield "".join(log_lines), None
 
-        def stop_training():
-            global _stop_event
-            _stop_event.set()
+        def _on_stop():
+            nonlocal active_job_id
+            if active_job_id:
+                session_mgr.cancel(active_job_id)
 
         train_btn.click(
-            fn=run_training,
-            inputs=[
-                dataset_yaml,
-                base_model_name,
-                base_model_file,
-                epochs,
-                batch_size,
-                imgsz,
-                lr0,
-                output_dir,
-            ],
+            fn=_on_training,
+            inputs=[dataset_yaml, base_model_name, base_model_file,
+                    epochs, batch_size, imgsz, lr0, output_dir],
             outputs=[training_status, training_output],
         )
-
-        stop_btn.click(fn=stop_training, inputs=[], outputs=[])
+        stop_btn.click(fn=_on_stop, inputs=[], outputs=[])
 
     return tab
 
 
+def _copy_model_to_temp(model_path: str) -> Optional[str]:
+    """Copy trained model to a temp directory for Gradio file serving."""
+    src = Path(model_path)
+    if not src.exists():
+        logger.warning("Expected model not found at: %s", model_path)
+        return None
+
+    dst = Path(tempfile.gettempdir()) / "yolo_trained_best.pt"
+    try:
+        shutil.copy2(src, dst)
+        logger.info("Model copied to temp for download: %s", dst)
+        return str(dst)
+    except Exception as e:
+        logger.warning("Could not copy model: %s", e)
+        return None
+
+
 def create_export_tab() -> gr.Tab:
-    """Create the export tab."""
+    """Create the export tab using ExportService."""
     with gr.Tab("Export", id="export") as tab:
         gr.Markdown("### Export Model to RKNN")
         gr.Markdown("Export your YOLO model directly to RKNN format for Rockchip devices")
@@ -397,20 +312,7 @@ def create_export_tab() -> gr.Tab:
             with gr.Column():
                 pt_model_file = gr.File(label="Model (.pt file)", file_types=[".pt"])
                 platform = gr.Dropdown(
-                    choices=[
-                        "rk3588",
-                        "rk3576",
-                        "rk3566",
-                        "rk3568",
-                        "rk3562",
-                        "rv1103",
-                        "rv1106",
-                        "rv1103b",
-                        "rv1106b",
-                        "rk2118",
-                        "rv1126b",
-                    ],
-                    value="rk3588",
+                    choices=RKNN_SUPPORTED_PLATFORMS, value="rk3588",
                     label="Target Platform",
                 )
                 imgsz = gr.Slider(320, 1280, value=640, step=32, label="Image Size")
@@ -420,37 +322,17 @@ def create_export_tab() -> gr.Tab:
                 export_status = gr.Textbox(label="Status", lines=5)
                 exported_file = gr.File(label="RKNN Model")
 
-        def run_pt_to_rknn(model, platform, imgsz):
+        def _on_pt_export(model, plat, img_sz):
+            if not model:
+                return "Error: Please upload a model file", None
             try:
-                if not model:
-                    return "Error: Please upload a model file", None
-
-                rknn_path = pt_to_rknn(
-                    model.name,
-                    target_platform=platform,
-                    imgsz=int(imgsz),
-                )
-
-                rknn_dir = Path(rknn_path)
-                zip_path = str(rknn_dir.with_suffix(".zip"))
-                shutil.make_archive(
-                    str(rknn_dir.with_suffix("")),
-                    "zip",
-                    rknn_dir,
-                )
-
-                logger.info(f"RKNN model exported to: {rknn_path}")
-                return (
-                    f"RKNN export successful!\n\nPlatform: {platform}\nDownload: {zip_path}",
-                    zip_path,
-                )
-
+                return export_pt_to_rknn(model.name, plat, int(img_sz))
             except Exception as e:
-                logger.error(f"RKNN export failed: {e}")
+                logger.error("RKNN export failed: %s", e)
                 return f"Export failed: {str(e)}", None
 
         export_btn.click(
-            fn=run_pt_to_rknn,
+            fn=_on_pt_export,
             inputs=[pt_model_file, platform, imgsz],
             outputs=[export_status, exported_file],
         )
@@ -461,41 +343,22 @@ def create_export_tab() -> gr.Tab:
 
         with gr.Row():
             with gr.Column():
-                onnx_file = gr.File(
-                    label="ONNX Model (.onnx)",
-                    file_types=[".onnx"],
-                )
+                onnx_file = gr.File(label="ONNX Model (.onnx)", file_types=[".onnx"])
                 onnx_platform = gr.Dropdown(
-                    choices=[
-                        "rk3588",
-                        "rk3576",
-                        "rk3566",
-                        "rk3568",
-                        "rk3562",
-                        "rv1103",
-                        "rv1106",
-                        "rv1103b",
-                        "rv1106b",
-                        "rk2118",
-                        "rv1126b",
-                    ],
-                    value="rk3588",
+                    choices=RKNN_SUPPORTED_PLATFORMS, value="rk3588",
                     label="Target Platform",
                 )
                 onnx_quantize = gr.Checkbox(
-                    value=False,
-                    label="Enable INT8 Quantization",
+                    value=False, label="Enable INT8 Quantization",
                     info="Requires calibration dataset",
                 )
                 onnx_dataset = gr.File(
                     label="Calibration Dataset (txt file with image paths)",
-                    file_types=[".txt"],
-                    visible=False,
+                    file_types=[".txt"], visible=False,
                 )
                 onnx_output = gr.Textbox(
                     label="Output Filename (optional)",
-                    placeholder="model.rknn",
-                    value="",
+                    placeholder="model.rknn", value="",
                 )
                 onnx_convert_btn = gr.Button("Convert ONNX to RKNN", variant="primary")
 
@@ -509,57 +372,28 @@ def create_export_tab() -> gr.Tab:
             outputs=[onnx_dataset],
         )
 
-        def run_onnx_to_rknn(onnx_input, platform, quantize, dataset, output_filename):
+        def _on_onnx_export(onnx_input, plat, quantize, dataset, out_filename):
+            if not onnx_input:
+                return "Error: Please upload an ONNX model file", None
+
+            # Pre-flight check
+            available, msg = check_rknn_availability()
+            if not available:
+                return msg, None
+
+            dataset_path = dataset.name if (dataset and quantize) else None
             try:
-                if not onnx_input:
-                    return "Error: Please upload an ONNX model file", None
-
-                try:
-                    from yolo_demo.export import RKNNExporter
-                except ImportError:
-                    return (
-                        "Error: rknn-toolkit2 is not installed.\n"
-                        "Install with: pip install 'yolo-demo[rknn]'\n"
-                        "Note: Only supports Linux x86_64 and Python 3.8-3.10",
-                        None,
-                    )
-
-                if not output_filename:
-                    model_name = Path(onnx_input.name).stem
-                    output_filename = f"{model_name}.rknn"
-                elif not output_filename.endswith(".rknn"):
-                    output_filename += ".rknn"
-
-                dataset_path = None
-                if quantize:
-                    if not dataset:
-                        return "Error: Calibration dataset required for quantization", None
-                    dataset_path = dataset.name
-
-                exporter = RKNNExporter(
-                    onnx_input.name,
-                    target_platform=platform,
+                return export_onnx_to_rknn(
+                    onnx_input.name, plat,
+                    quantize=quantize, dataset_path=dataset_path,
+                    output_filename=out_filename or None,
                 )
-                rknn_path = exporter.export(
-                    output=output_filename,
-                    quantize=quantize,
-                    dataset=dataset_path,
-                )
-
-                logger.info(f"RKNN model exported to: {rknn_path}")
-                return (
-                    f"RKNN conversion successful!\n\nPlatform: {platform}\nOutput: {rknn_path}",
-                    rknn_path,
-                )
-
-            except ImportError as e:
-                return f"Error: {str(e)}", None
             except Exception as e:
-                logger.error(f"RKNN conversion failed: {e}")
+                logger.error("RKNN conversion failed: %s", e)
                 return f"Conversion failed: {str(e)}", None
 
         onnx_convert_btn.click(
-            fn=run_onnx_to_rknn,
+            fn=_on_onnx_export,
             inputs=[onnx_file, onnx_platform, onnx_quantize, onnx_dataset, onnx_output],
             outputs=[onnx_status, onnx_rknn_file],
         )
@@ -569,7 +403,7 @@ def create_export_tab() -> gr.Tab:
 
 
 def create_webui() -> gr.Blocks:
-    """Create the complete Gradio WebUI."""
+    """Create the complete Gradio WebUI with health check endpoint."""
     with gr.Blocks(title="YOLO Demo - Object Detection") as app:
         gr.Markdown(
             """
@@ -592,23 +426,37 @@ def create_webui() -> gr.Blocks:
             """
         )
 
+    # Mount a /health endpoint on the underlying FastAPI app
+    _mount_health_endpoint(app)
+
     return app
 
 
+def _mount_health_endpoint(blocks: gr.Blocks) -> None:
+    """Mount a /health endpoint on Gradio's internal FastAPI-like app."""
+    @blocks.app.get("/health")
+    async def health():
+        return {"status": "healthy", "service": "yolo-demo-webui"}
+
+
 def launch(host: str = "0.0.0.0", port: int = 7860, **kwargs: Any) -> None:
-    """Launch the WebUI."""
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    """Launch the WebUI with production-grade configuration.
+
+    Environment variables:
+        LOG_FORMAT:         Set to "json" for structured JSON-line logging.
+        YOLO_ALLOWED_PATHS: Comma-separated paths Gradio can serve files from.
+                            Defaults to "/tmp/yolo_outputs".
+    """
+    from ..utils.logging import setup_logging
+
+    setup_logging(level=logging.INFO)
 
     app = create_webui()
-    logger.info(f"Launching WebUI at http://{host}:{port}")
-    # Allow serving files from anywhere under the user's home directory so
-    # that trained models written by Ultralytics (e.g. ~/runs/...) can be
-    # downloaded via the File output component.
-    kwargs.setdefault("allowed_paths", [str(Path.home())])
+    logger.info("Launching WebUI at http://%s:%s", host, port)
+
+    allowed = os.environ.get("YOLO_ALLOWED_PATHS", "/tmp/yolo_outputs")
+    kwargs.setdefault("allowed_paths", [p.strip() for p in allowed.split(",") if p.strip()])
+
     app.launch(server_name=host, server_port=port, **kwargs)
 
 

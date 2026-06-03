@@ -5,21 +5,9 @@ from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/export", tags=["export"])
+from yolo_demo.export import RKNN_SUPPORTED_PLATFORMS
 
-RKNN_SUPPORTED_PLATFORMS = [
-    "rk3588",
-    "rk3576",
-    "rk3566",
-    "rk3568",
-    "rk3562",
-    "rv1103",
-    "rv1106",
-    "rv1103b",
-    "rv1106b",
-    "rk2118",
-    "rv1126b",
-]
+router = APIRouter(prefix="/export", tags=["export"])
 
 
 class PTToRKNNRequest(BaseModel):

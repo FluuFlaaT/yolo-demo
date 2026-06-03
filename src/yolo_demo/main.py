@@ -193,11 +193,9 @@ def run_export(model: str, platform: str, imgsz: int):
 
 def run_webui(host: str, port: int, share: bool):
     """Launch WebUI."""
-    from yolo_demo.ui.webui import create_webui
+    from yolo_demo.ui.webui import launch
 
-    app = create_webui()
-    logger.info(f"Launching WebUI at http://{host}:{port}")
-    app.launch(server_name=host, server_port=port, share=share)
+    launch(host=host, port=port, share=share)
 
 
 def run_api(host: str, port: int, reload: bool):

@@ -1,9 +1,39 @@
 """Logging configuration for YOLO Demo."""
 
+import json
 import logging
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
+
+
+class JsonFormatter(logging.Formatter):
+    """JSON log formatter for structured logging (ELK / Loki / Datadog)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[1]:
+            log_entry["exception"] = str(record.exc_info[1])
+        return json.dumps(log_entry, ensure_ascii=False)
+
+
+def _get_log_format() -> str:
+    """Resolve log format from LOG_FORMAT env var.
+
+    Set LOG_FORMAT=json for structured JSON output.
+    Defaults to human-readable format.
+    """
+    fmt = os.environ.get("LOG_FORMAT", "").lower()
+    if fmt == "json":
+        return "json"
+    return "text"
 
 
 def setup_logging(
@@ -21,35 +51,37 @@ def setup_logging(
     if format_string is None:
         format_string = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    # Create formatter
-    formatter = logging.Formatter(format_string)
+    log_format = _get_log_format()
 
-    # Get root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
-
-    # Clear existing handlers
     root_logger.handlers.clear()
 
-    # Add console handler
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(level)
-    console_handler.setFormatter(formatter)
+
+    if log_format == "json":
+        console_handler.setFormatter(JsonFormatter())
+    else:
+        console_handler.setFormatter(logging.Formatter(format_string))
+
     root_logger.addHandler(console_handler)
 
-    # Add file handler if specified
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_path)
         file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
+        if log_format == "json":
+            file_handler.setFormatter(JsonFormatter())
+        else:
+            file_handler.setFormatter(logging.Formatter(format_string))
         root_logger.addHandler(file_handler)
 
-    # Log setup info
-    logging.info(f"Logging initialized at level {logging.getLevelName(level)}")
+    logging.info("Logging initialized at level %s (format=%s)",
+                 logging.getLevelName(level), log_format)
     if log_file:
-        logging.info(f"Log file: {log_file}")
+        logging.info("Log file: %s", log_file)
 
 
 def get_logger(name: str) -> logging.Logger:

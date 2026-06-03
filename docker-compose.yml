@@ -59,12 +59,19 @@ services:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       # Point the WebUI at the API container (container-name DNS):
       API_BASE_URL: "${API_BASE_URL:-http://api:8000}"
+      YOLO_ALLOWED_PATHS: "/tmp/yolo_outputs,/models"
     volumes:
       - models:/models
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7860/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 # ── Named volume for model weights (persists across restarts) ─────────────
 volumes:

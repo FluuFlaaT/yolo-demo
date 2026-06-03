@@ -70,12 +70,13 @@ ENV VIRTUAL_ENV=/opt/venv \
     API_PORT=8000 \
     WEBUI_PORT=7860 \
     CORS_ORIGINS="*" \
+    YOLO_ALLOWED_PATHS="/tmp/yolo_outputs,/models" \
     LOG_LEVEL=INFO
 
 WORKDIR /opt/app
 
 # ── Model weights volume mount point ──────────────────────────────────────
-RUN mkdir -p /models && chown appuser:appuser /models
+RUN mkdir -p /models /tmp/yolo_outputs && chown appuser:appuser /models /tmp/yolo_outputs
 VOLUME ["/models"]
 
 # ── Network ───────────────────────────────────────────────────────────────
