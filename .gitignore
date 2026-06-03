@@ -54,5 +54,8 @@ Thumbs.db
 gradio_cached_examples/
 tmp/
 
+# OpenCode plan files
+.omo/
+
 # Test
 test-pics/

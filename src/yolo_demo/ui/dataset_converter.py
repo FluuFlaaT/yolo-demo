@@ -6,12 +6,7 @@ from pathlib import Path
 
 import gradio as gr
 
-try:
-    from . import coco2yolo
-except ImportError:
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "scripts"))
-    import coco2yolo  # type: ignore
+from .coco2yolo import convert_coco_to_yolo, convert_voc_to_yolo
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +97,7 @@ def create_dataset_converter_tab() -> gr.Tab:
                     if not coco_file:
                         return "Error: Please upload COCO annotations JSON", None, None
 
-                    yaml_path = coco2yolo.convert_coco_to_yolo(
+                    yaml_path = convert_coco_to_yolo(
                         coco_json_path=coco_file.name,
                         output_dir=str(output_dir),
                         copy_images=copy_images,
@@ -130,7 +125,7 @@ def create_dataset_converter_tab() -> gr.Tab:
                     else:
                         voc_dir = Path(voc_file.name)
 
-                    yaml_path = coco2yolo.convert_voc_to_yolo(
+                    yaml_path = convert_voc_to_yolo(
                         voc_devkit_dir=str(voc_dir),
                         output_dir=str(output_dir),
                         copy_images=copy_images,

@@ -14,7 +14,7 @@ uv sync --extra dev
 # 运行 CLI（infer/train/export/webui/api）
 uv run yolo-demo <command>
 
-# 运行测试（85 tests，60% 覆盖率）
+# 运行测试（132 tests，60% 覆盖率）
 uv run pytest
 
 # 运行测试并查看覆盖率 HTML
@@ -33,13 +33,20 @@ docker compose up -d
 - CLI 入口：`yolo_demo.main:cli`
 - WebUI 入口：`yolo_demo.ui.webui:launch`
 - API 入口：`yolo_demo.api.app:serve`
-- 测试目录：`tests/`（6 个文件，85 tests）
+- UI 服务层：`src/yolo_demo/ui/services/`（从 Gradio 回调中解耦的业务逻辑）
+- 测试目录：`tests/`（7 个文件，132 tests）
 - Docker 部署：`Dockerfile` + `docker-compose.yml` + `.dockerignore`
 - CI 工作流：`.github/workflows/ci.yml` + `docker-publish.yml`
 
 ## Gradio WebUI
 
 4 个标签页：**Inference** / **Training** / **Export** / **Dataset Converter**。Video Stream 标签页已移除。
+
+生产特性：
+- 训练任务队列（环境变量 `YOLO_DEMO_MAX_CONCURRENT_TRAIN_JOBS`，默认 1）
+- 边端设备参数预设（RK3588 / Jetson Nano / Jetson Xavier NX / Jetson Orin / Desktop / CPU）
+- 结构�� JSON 日志（`LOG_FORMAT=json`）
+- WebUI 健康检查端点：`GET /health`
 
 ## 关键约束
 
