@@ -3,7 +3,7 @@ name = "yolo-demo"
 version = "0.1.0"
 description = "Lightweight real-time object detection system for edge computing"
 readme = "README.md"
-requires-python = "==3.9.*"
+requires-python = ">=3.9"
 dependencies = [
     "ultralytics>=8.0,<9.0",
     "torch>=2.0,<2.5",

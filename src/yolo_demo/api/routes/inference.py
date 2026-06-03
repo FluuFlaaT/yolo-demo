@@ -2,8 +2,9 @@
 
 import base64
 import io
+import logging
 import time
-from typing import Any
+from typing import Any, Dict, Tuple
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, UploadFile
@@ -12,19 +13,65 @@ from PIL import Image
 from yolo_demo.api.schemas import Detection, InferenceResponse
 from yolo_demo.inference import create_engine, get_available_backend
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/inference", tags=["inference"])
 
-# Global engine cache
-_engine_cache: dict[str, Any] = {}
+# -- Engine cache with TTL -----------------------------------------------------
+# Cache entries: (engine, last_access_time, model_path)
+# TTL: 30 minutes of inactivity before eviction.
+# Max size: 5 engines (older idle entries evicted first).
+
+_MAX_CACHE_SIZE = 5
+_CACHE_TTL_SECONDS = 30 * 60  # 30 minutes
+
+_engine_cache: Dict[str, Tuple[Any, float]] = {}  # model_path -> (engine, last_access)
+
+
+def _evict_idle() -> None:
+    """Evict cache entries that have been idle beyond TTL or when cache is full."""
+    now = time.monotonic()
+
+    # Evict expired
+    expired = [
+        k for k, (_, ts) in _engine_cache.items() if (now - ts) > _CACHE_TTL_SECONDS
+    ]
+    for key in expired:
+        _close_engine(key)
+
+    # Evict oldest if still over limit
+    while len(_engine_cache) > _MAX_CACHE_SIZE:
+        oldest = min(_engine_cache.items(), key=lambda x: x[1][1])
+        _close_engine(oldest[0])
+
+
+def _close_engine(model_path: str) -> None:
+    """Gracefully close and remove a cached engine."""
+    if model_path in _engine_cache:
+        engine, _ = _engine_cache.pop(model_path)
+        try:
+            engine.__exit__(None, None, None)  # release GPU resources
+            logger.info("Evicted cached engine: %s", model_path)
+        except Exception:
+            logger.warning("Error closing engine for %s", model_path, exc_info=True)
 
 
 def get_engine(model_path: str):
-    """Get or create an inference engine."""
+    """Get or create an inference engine with cache eviction."""
+    _evict_idle()
+
     if model_path not in _engine_cache:
+        logger.info("Loading engine for model: %s", model_path)
         engine = create_engine(model_path)
         engine.load_model()
-        _engine_cache[model_path] = engine
-    return _engine_cache[model_path]
+        _engine_cache[model_path] = (engine, time.monotonic())
+        logger.info("Engine cached (total: %d)", len(_engine_cache))
+    else:
+        # Refresh access time
+        engine, _ = _engine_cache[model_path]
+        _engine_cache[model_path] = (engine, time.monotonic())
+
+    return engine
 
 
 @router.post("/image", response_model=InferenceResponse)
@@ -77,8 +124,12 @@ async def infer_image(
             image_height=img_np.shape[0],
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Inference failed for model: %s", model)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during inference. Check server logs for details.",
+        )
 
 
 @router.post("/image/base64", response_model=InferenceResponse)
@@ -130,8 +181,12 @@ async def infer_image_base64(
             image_height=img_np.shape[0],
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Base64 inference failed for model: %s", model)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during inference. Check server logs for details.",
+        )
 
 
 @router.get("/backend")

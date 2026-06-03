@@ -4,105 +4,89 @@
 
 ## 功能特性
 
-- 跨平台推理：自动选择最优后端（CUDA 优先，其次 MPS，最后 CPU）
+- 跨平台推理：自动选择最优后端（CUDA > MPS > CPU）
 - 增量训练：支持在自定义数据集上微调 YOLO 模型
-- ONNX 导出：导出模型用于边缘设备部署（RK3588、TensorRT、OpenVINO）
-- RKNN 转换：支持将 ONNX 模型转换为 RKNN 格式（需安装 rknn-toolkit2）
-- WebUI：基于 Gradio 的图形界面，支持推理、训练和导出
-- REST API：基于 FastAPI 的 RESTful 接口，便于集成
+- 模型导出：PT → ONNX → RKNN 全流程转换，支持 Rockchip NPU 多平台
+- WebUI：基于 Gradio 的图形界面（推理、训练、导出、数据集转换）
+- REST API：基于 FastAPI 的 RESTful 接口，引擎缓存 + 优雅关闭
+- Docker 部署：多阶段构建镜像 + docker-compose 一键启动
 
 ## 安装
 
 ### 前置要求
 
 - Python 3.9 或更高版本
-- uv 包管理器（推荐）或 pip
+- uv 包管理器（推荐）
 
 ### 安装步骤
 
 ```bash
-# 克隆仓库
 git clone <repository-url>
 cd yolo-demo
-
-# 使用 uv 安装依赖（推荐）
 uv sync
-
-# 或使用 pip 安装
-pip install -e .
 ```
 
 ### 开发环境
 
 ```bash
-# 安装开发依赖（包含测试工具）
-uv sync --dev
+uv sync --extra dev
 ```
 
 ## 快速开始
 
-### 命令行使用
-
-#### 目标检测推理
+### 命令行
 
 ```bash
-# 基本推理（使用默认 YOLOv8n 模型）
+# 推理
 uv run yolo-demo infer image.jpg
+uv run yolo-demo infer image.jpg --model yolov8s.pt --conf 0.5 -o output.jpg
 
-# 指定模型
-uv run yolo-demo infer image.jpg --model yolov8s.pt
+# 训练
+uv run yolo-demo train dataset.yaml --epochs 200 --batch 32
 
-# 保存结果
-uv run yolo-demo infer image.jpg -o output.jpg
+# 导出为 RKNN
+uv run yolo-demo export model.pt --platform rk3588
 
-# 调整置信度阈值
-uv run yolo-demo infer image.jpg --conf 0.5
-```
-
-#### 模型训练
-
-```bash
-# 基本训练
-uv run yolo-demo train dataset.yaml
-
-# 指定预训练模型和参数
-uv run yolo-demo train dataset.yaml --model yolov8n.pt --epochs 200 --batch 32
-
-# 指定输出目录
-uv run yolo-demo train dataset.yaml -o runs/custom_training
-```
-
-#### 模型导出
-
-```bash
-# 导出为 ONNX 格式
-uv run yolo-demo export model.pt
-
-# 指定输出路径
-uv run yolo-demo export model.pt -o ./models
-
-# 指定 opset 版本
-uv run yolo-demo export model.pt --opset 12
-
-# 导出为 RK3588 优化格式
-uv run yolo-demo export model.pt --rk3588
-```
-
-#### 启动服务
-
-```bash
-# 启动 WebUI（默认端口 7860）
+# 启动 WebUI（端口 7860）
 uv run yolo-demo webui
 
-# 指定端口
-uv run yolo-demo webui --port 8080
-
-# 启动 API 服务（默认端口 8000）
+# 启动 API 服务（端口 8000）
 uv run yolo-demo api
-
-# 启用自动重载（开发模式）
-uv run yolo-demo api --reload
 ```
+
+### Docker 一键部署
+
+```bash
+# 构建并启动 API + WebUI
+docker compose up -d
+
+# 仅启动 API
+docker compose up -d api
+
+# 仅启动 WebUI
+docker compose up -d webui
+
+# 将模型文件注入容器
+docker compose cp yolov8n.pt api:/models/
+
+# 查看日志
+docker compose logs -f
+
+# 停止并清理
+docker compose down -v
+```
+
+服务启动后：
+- **API 文档**：http://localhost:8000/docs
+- **WebUI**：http://localhost:7860
+
+环境变量：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SERVICE_MODE` | `api` | 启动模式：`api` 或 `webui` |
+| `CORS_ORIGINS` | `*` | 允许的跨域来源（逗号分隔）。生产环境应设置为前端域名 |
+| `LOG_LEVEL` | `INFO` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 ### Python API
 
@@ -112,21 +96,17 @@ uv run yolo-demo api --reload
 from yolo_demo.inference import create_engine
 import cv2
 
-# 创建推理引擎（自动选择最优后端）
 engine = create_engine("yolov8n.pt")
 engine.load_model()
 
-# 读取图像
 img = cv2.imread("image.jpg")
 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-# 执行推理
 result = engine.predict(img_rgb)
 
-# 输出结果
 print(f"检测到 {len(result.detections)} 个目标")
 for det in result.detections:
-    print(f"  {det.class_name}: 置信度 {det.confidence:.2f}, 位置 {det.bbox}")
+    print(f"  {det.class_name}: {det.confidence:.2f}, 位置 {det.bbox}")
 ```
 
 #### 训练
@@ -134,156 +114,116 @@ for det in result.detections:
 ```python
 from yolo_demo.training import TrainingConfig, Trainer
 
-# 配置训练参数
 config = TrainingConfig(
-    model="yolov8n.pt",      # 预训练模型
-    data="dataset.yaml",     # 数据集配置文件
-    epochs=100,              # 训练轮数
-    batch=16,                # 批次大小
-    imgsz=640,               # 输入图像尺寸
-    lr0=0.01,                # 初始学习率
+    model="yolov8n.pt",
+    data="dataset.yaml",
+    epochs=100,
+    batch=16,
+    imgsz=640,
+    lr0=0.01,
 )
 
-# 创建训练器并开始训练
 trainer = Trainer(config)
 result = trainer.train()
 
-# 检查训练结果
 if result.success:
     print(f"训练完成，模型保存至：{result.model_path}")
 else:
     print(f"训练失败：{result.error}")
 ```
 
-#### 导出模型
+#### 导出模型（PT → RKNN）
 
 ```python
-from yolo_demo.export import ONNXExporter, prepare_for_rk3588
+from yolo_demo.export import pt_to_rknn
 
-# 标准 ONNX 导出
-exporter = ONNXExporter("yolov8n.pt")
-onnx_path = exporter.export(opset=11, dynamic=True)
-
-# RK3588 优化导出
-onnx_path = prepare_for_rk3588("yolov8n.pt")
+# 直接导出为 RKNN 格式
+rknn_path = pt_to_rknn("yolov8n.pt", target_platform="rk3588")
 ```
 
 ## WebUI 使用指南
 
-启动 WebUI 后，在浏览器中访问 `http://localhost:7860`。
+启动 WebUI 后，在浏览器中访问 `http://localhost:7860`。共 4 个标签页：
 
-### 推理标签页
+### 推理（Inference）
 
-1. 上传待检测图像
-2. 选择模型来源：
-   - 预训练模型：从 YOLOv8n/s/m/l/x 中选择
-   - 自定义模型：上传自己的 .pt 文件
-3. 调整置信度阈值（可选）
-4. 点击"Detect Objects"执行检测
-5. 查看检测结果和可视化输出
+1. 上传待检测图像，输入模型名称或上传自定义 .pt 文件
+2. 调整置信度阈值
+3. 点击 "Detect Objects" 查看检测结果和可视化输出
 
-### 训练标签页
+### 训练（Training）
 
-1. 上传 YOLO 格式的数据集配置文件（.yaml）
-2. 上传预训练模型（可选，默认使用 YOLOv8n.pt）
-3. 展开"Training Parameters"设置训练参数：
-   - Epochs：训练轮数
-   - Batch Size：批次大小
-   - Image Size：图像尺寸
-   - Initial Learning Rate：初始学习率
-   - Output Directory：输出目录（可选）
-4. 点击"Start Training"开始训练
+1. 上传 YOLO 格式数据集配置文件（.yaml）
+2. 选择基础模型（列表选择或上传 .pt 文件）
+3. 展开 "Training Parameters" 配置训练超参数
+4. 点击 "Start Training"，实时查看日志流输出
 5. 训练完成后下载模型文件
 
-### 导出标签页
+### 导出（Export）
 
-#### 标准 ONNX 导出
+- **PT → RKNN 快速导出**：上传 .pt 文件，选择目标平台，一键导出
+- **ONNX → RKNN 转换**：上传 .onnx 文件，可选 INT8 量化
 
-1. 上传 .pt 模型文件
-2. 选择 ONNX Opset 版本（推荐 11 或 12）
-3. 勾选动态轴和简化选项
-4. 指定输出文件名（可选）
-5. 点击"Export to ONNX"
+### 数据集转换（Dataset Converter）
 
-#### RK3588 快速导出
-
-1. 上传 .pt 模型文件
-2. 指定输出文件名（默认格式：`模型名-rk3588-export.onnx`）
-3. 点击"Export for RK3588"
-
-### 数据集转换标签页
-
-用于将 COCO 或 VOC 格式数据集转换为 YOLO 格式。
-
-1. 选择输入格式（COCO 或 VOC）
-2. 上传对应的标注文件：
-   - COCO：上传 annotations.json 文件
-   - VOC：上传包含 VOCdevkit 的 zip 文件
-3. 选择是否复制图像到输出目录
-4. 指定输出数据集名称
-5. 点击"Convert Dataset"执行转换
-6. 下载生成的 dataset.yaml 文件
+COCO / VOC 格式 → YOLO 格式，自动生成 dataset.yaml。
 
 ## 数据集格式
-
-### YOLO 格式数据集结构
 
 ```
 dataset/
 ├── dataset.yaml          # 数据集配置文件
 ├── images/
-│   ├── train/           # 训练图像
-│   └── val/             # 验证图像
+│   ├── train/
+│   └── val/
 └── labels/
-    ├── train/           # 训练标注
-    └── val/             # 验证标注
+    ├── train/
+    └── val/
 ```
 
-### dataset.yaml 配置文件
-
 ```yaml
-path: /path/to/dataset    # 数据集根目录
-train: images/train       # 训练集相对路径
-val: images/val           # 验证集相对路径
-test: images/test         # 测试集相对路径（可选）
+# dataset.yaml
+path: /path/to/dataset
+train: images/train
+val: images/val
 
-nc: 80                    # 类别数量
-names:                    # 类别名称列表
+nc: 80
+names:
   - person
   - bicycle
   - car
   ...
 ```
 
-### 标注文件格式
-
-每个图像对应一个同名的.txt 标注文件，每行格式为：
+标注文件（.txt）每行格式：
 
 ```
 <class_id> <x_center> <y_center> <width> <height>
 ```
 
-坐标值已归一化到 [0, 1] 范围。
+坐标已归一化到 [0, 1]。
 
-## REST API 接口
+## REST API
 
-### 启动服务
+### 启动
 
 ```bash
 uv run yolo-demo api
+# 或通过 Docker
+docker compose up -d api
 ```
 
-服务启动后访问 `http://localhost:8000/docs` 查看交互式 API 文档。
+访问 `http://localhost:8000/docs` 查看交互式文档。
 
-### 接口列表
+### 端点一览
 
-| 方法 | 路径 | 描述 |
+| 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/` | API 信息 |
-| GET | `/health` | 健康检查 |
+| GET | `/health` | 健康检查（后端、CUDA/MPS 可用性） |
 | GET | `/models` | 可用模型列表 |
-| GET | `/api/v1/inference/backend` | 后端信息 |
-| POST | `/api/v1/inference/image` | 图像推理 |
+| GET | `/api/v1/inference/backend` | 推理后端信息 |
+| POST | `/api/v1/inference/image` | 图像推理（multipart） |
 | POST | `/api/v1/inference/image/base64` | Base64 图像推理 |
 | POST | `/api/v1/train` | 启动训练任务 |
 | GET | `/api/v1/train/{job_id}/status` | 查询训练状态 |
@@ -291,119 +231,56 @@ uv run yolo-demo api
 | POST | `/api/v1/export/onnx` | 导出 ONNX |
 | POST | `/api/v1/export/onnx/rk3588` | 导出 RK3588 优化模型 |
 
-### 接口调用示例
-
-#### 图像推理
+### 调用示例
 
 ```bash
+# 图像推理
 curl -X POST "http://localhost:8000/api/v1/inference/image" \
   -F "image=@image.jpg" \
   -F "model=yolov8n.pt" \
   -F "conf_threshold=0.25"
-```
 
-#### Base64 图像推理
+# 健康检查
+curl http://localhost:8000/health
 
-```bash
-# 将图像转换为 base64
-base64 -i image.jpg
-
-# 调用接口
-curl -X POST "http://localhost:8000/api/v1/inference/image/base64" \
-  -H "Content-Type: application/json" \
-  -d '{"image_data": "<base64_string>", "model": "yolov8n.pt"}'
-```
-
-#### 启动训练
-
-```bash
+# 启动训练
 curl -X POST "http://localhost:8000/api/v1/train" \
   -H "Content-Type: application/json" \
-  -d '{
-    "data_yaml": "dataset.yaml",
-    "epochs": 100,
-    "batch_size": 16,
-    "imgsz": 640,
-    "lr0": 0.01
-  }'
-```
+  -d '{"data_yaml": "dataset.yaml", "epochs": 100, "batch_size": 16}'
 
-#### 查询训练状态
-
-```bash
+# 查询训练状态
 curl "http://localhost:8000/api/v1/train/<job_id>/status"
 ```
 
-返回示例：
+### 安全配置
 
-```json
-{
-  "job_id": "xxx-xxx-xxx",
-  "status": "running",
-  "progress": 0.45,
-  "metrics": {"precision": 0.85, "recall": 0.82}
-}
-```
-
-#### 导出 ONNX
+CORS 通过环境变量 `CORS_ORIGINS` 控制。开发环境下默认为 `*`（允许所有来源，credentials 禁用）。生产部署时设置：
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/export/onnx" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model_path": "yolov8n.pt",
-    "opset": 11,
-    "dynamic": true,
-    "simplify": true
-  }'
+export CORS_ORIGINS="https://your-frontend.example.com"
 ```
+
+引擎缓存上限 5 个模型，空闲 30 分钟后自动释放 GPU 资源。服务收到 SIGTERM 时自动清理所有缓存引擎。
 
 ## 边缘设备部署
 
 ### RK3588 (Rockchip NPU)
 
-#### 快速转换流程
-
 ```bash
-# 1. 导出 ONNX 模型（优化设置）
-uv run yolo-demo export model.pt --rk3588
+# 1. PT → RKNN 一键导出
+uv run yolo-demo export model.pt --platform rk3588
 
-# 2. 转换为 RKNN 格式（需要安装 rknn-toolkit2）
-# 方式一：使用 WebUI
-uv run yolo-demo webui
-# 然后在 Export 标签页中使用 "Convert to RKNN" 功能
-
-# 方式二：使用 Python API
-python3 -c "
-from yolo_demo.export import RKNNExporter
-exporter = RKNNExporter('model.onnx')
-exporter.export('model.rknn')
-"
-
-# 3. 传输到 RK3588 设备
+# 2. 传输到 RK3588
 scp model.rknn user@rk3588:/path/to/
 
-# 4. 在设备上使用 rknn-toolkit2-lite 运行推理
-```
-
-#### 安装 rknn-toolkit2
-
-```bash
-# 仅支持 Linux x86_64 和 Python 3.8-3.10
-pip install 'yolo-demo[rknn]'
+# 3. 在设备上使用 rknn-toolkit2-lite 进行推理
 ```
 
 ### NVIDIA Jetson (TensorRT)
 
-1. 导出 ONNX 模型
-
 ```bash
 uv run yolo-demo export model.pt --opset 13 --no-dynamic
-```
 
-2. 使用 trtexec 转换
-
-```bash
 trtexec --onnx=model.onnx \
   --minShapes=images:1x3x640x640 \
   --optShapes=images:4x3x640x640 \
@@ -411,14 +288,11 @@ trtexec --onnx=model.onnx \
   --saveEngine=model.engine
 ```
 
-## 配置选项
+## 配置
 
-### 训练配置
-
-可在 `configs/` 目录找到预设配置文件。
+`configs/default.yaml`：
 
 ```yaml
-# configs/default.yaml
 model: yolov8n.pt
 epochs: 100
 imgsz: 640
@@ -438,16 +312,8 @@ fliplr: 0.5
 ## 测试
 
 ```bash
-# 运行所有测试
 uv run pytest
-
-# 运行测试并生成覆盖率报告
 uv run pytest --cov
-
-# 查看 HTML 覆盖率报告
-open cov_html/index.html
-
-# 运行特定测试文件
 uv run pytest tests/test_inference.py -v
 ```
 
@@ -455,69 +321,56 @@ uv run pytest tests/test_inference.py -v
 
 ```
 yolo-demo/
-├── pyproject.toml          # 项目配置和依赖
-├── README.md               # 项目文档
+├── pyproject.toml              # 项目配置和依赖
+├── Dockerfile                  # 多阶段构建镜像
+├── docker-compose.yml          # 一键部署
+├── .dockerignore               # Docker 构建排除
 ├── configs/
-│   └── default.yaml        # 默认训练配置
+│   └── default.yaml            # 默认训练配置
 ├── scripts/
-│   ├── coco2yolo.py        # COCO/VOC 转 YOLO 格式工具
-│   ├── export.py           # 导出脚本
-│   └── train.py            # 训练脚本
+│   ├── coco2yolo.py            # COCO/VOC → YOLO 格式转换
+│   ├── convert_to_rknn.py      # ONNX → RKNN 转换脚本
+│   ├── export.py               # 模型导出脚本
+│   └── train.py                # 训练脚本
 ├── src/yolo_demo/
 │   ├── __init__.py
-│   ├── main.py             # CLI 入口
+│   ├── main.py                 # CLI 入口（infer / train / export / webui / api）
 │   ├── api/
-│   │   ├── app.py          # FastAPI 应用
-│   │   ├── schemas.py      # Pydantic 数据模型
+│   │   ├── app.py              # FastAPI 应用（CORS、lifespan、健康检查）
+│   │   ├── schemas.py          # Pydantic 数据模型
 │   │   └── routes/
-│   │       ├── inference.py  # 推理接口
-│   │       ├── training.py   # 训练接口
-│   │       └── export.py     # 导出接口
+│   │       ├── inference.py    # 推理接口（引擎缓存 TTL）
+│   │       ├── training.py     # 训练接口
+│   │       └── export.py       # 导出接口
 │   ├── inference/
-│   │   ├── engine.py       # 推理抽象基类
-│   │   ├── cpu_backend.py  # CPU 后端
-│   │   ├── cuda_backend.py # CUDA 后端
-│   │   └── mps_backend.py  # MPS 后端
+│   │   ├── engine.py           # InferenceEngine 抽象基类
+│   │   ├── cpu_backend.py      # CPU 后端
+│   │   ├── cuda_backend.py     # CUDA 后端
+│   │   └── mps_backend.py      # MPS 后端
 │   ├── training/
-│   │   └── trainer.py      # 训练模块
+│   │   └── trainer.py          # TrainingConfig + Trainer
 │   ├── export/
-│   │   ├── onnx_exporter.py # ONNX 导出模块
-│   │   └── rknn_exporter.py # RKNN 转换模块
+│   │   └── rknn_exporter.py    # PT → RKNN 导出
 │   ├── ui/
-│   │   ├── webui.py         # Gradio WebUI
-│   │   └── dataset_converter.py  # 数据集转换 UI
+│   │   ├── webui.py            # Gradio WebUI（4 标签页）
+│   │   └── dataset_converter.py # 数据集转换 UI
 │   └── utils/
-│       └── logging.py       # 日志配置
+│       └── logging.py          # 日志配置
 └── tests/
     ├── test_api.py
     ├── test_inference.py
-    └── test_export.py
-```
-
-## 日志配置
-
-```python
-from yolo_demo.utils import setup_logging, get_logger
-
-# 配置日志
-setup_logging(
-    level=logging.INFO,
-    log_file="app.log"
-)
-
-# 获取 logger
-logger = get_logger(__name__)
-logger.info("Application started")
+    ├── test_export.py
+    └── test_training.py
 ```
 
 ## 常见问题
 
 ### 内存不足
 
-训练时出现 CUDA out of memory：
+训练时 CUDA out of memory：
 - 减小 batch size
 - 减小 imgsz（如从 640 改为 416）
-- 使用更小的模型（如 yolov8n 而非 yolov8x）
+- 使用更小的模型（yolov8n 而非 yolov8x）
 
 ### 推理速度慢
 
@@ -529,7 +382,6 @@ logger.info("Application started")
 
 - 检查 COCO JSON 或 VOC XML 格式是否正确
 - 确认图像路径与标注中的引用一致
-- 检查类别名称是否匹配
 
 ## 许可证
 
