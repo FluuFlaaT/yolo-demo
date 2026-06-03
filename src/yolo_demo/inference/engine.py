@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import numpy as np
 
@@ -31,7 +31,7 @@ class DetectionResult:
 class InferenceEngine(ABC):
     """Abstract base class for YOLO inference engines."""
 
-    def __init__(self, model_path: str | Path):
+    def __init__(self, model_path: Union[str, Path]):
         self.model_path = Path(model_path)
         self.model = None
         self.device = "cpu"

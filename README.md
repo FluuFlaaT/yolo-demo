@@ -7,6 +7,7 @@
 - 跨平台推理：自动选择最优后端（CUDA 优先，其次 MPS，最后 CPU）
 - 增量训练：支持在自定义数据集上微调 YOLO 模型
 - ONNX 导出：导出模型用于边缘设备部署（RK3588、TensorRT、OpenVINO）
+- RKNN 转换：支持将 ONNX 模型转换为 RKNN 格式（需安装 rknn-toolkit2）
 - WebUI：基于 Gradio 的图形界面，支持推理、训练和导出
 - REST API：基于 FastAPI 的 RESTful 接口，便于集成
 
@@ -14,7 +15,7 @@
 
 ### 前置要求
 
-- Python 3.10 或更高版本
+- Python 3.9 或更高版本
 - uv 包管理器（推荐）或 pip
 
 ### 安装步骤
@@ -361,24 +362,35 @@ curl -X POST "http://localhost:8000/api/v1/export/onnx" \
 
 ### RK3588 (Rockchip NPU)
 
-**快速开始**: 查看 [RKNN 快速开始指南](docs/RKNN_QUICKSTART.md) 了解完整流程。
-
-**详细文档**: [RK3588 部署指南](docs/RK3588_DEPLOYMENT.md)
-
 #### 快速转换流程
 
 ```bash
-# 1. 导出 ONNX 模型
+# 1. 导出 ONNX 模型（优化设置）
 uv run yolo-demo export model.pt --rk3588
 
-# 2. 使用 Docker 转换为 RKNN（适用于 Mac/Windows/Linux）
-./docker/build_and_convert.sh model-rk3588-export.onnx
+# 2. 转换为 RKNN 格式（需要安装 rknn-toolkit2）
+# 方式一：使用 WebUI
+uv run yolo-demo webui
+# 然后在 Export 标签页中使用 "Convert to RKNN" 功能
+
+# 方式二：使用 Python API
+python3 -c "
+from yolo_demo.export import RKNNExporter
+exporter = RKNNExporter('model.onnx')
+exporter.export('model.rknn')
+"
 
 # 3. 传输到 RK3588 设备
-scp rknn_models/model.rknn user@rk3588:/path/to/
+scp model.rknn user@rk3588:/path/to/
 
-# 4. 在设备上运行推理
-python3 inference_rknn.py image.jpg model.rknn -o output.jpg
+# 4. 在设备上使用 rknn-toolkit2-lite 运行推理
+```
+
+#### 安装 rknn-toolkit2
+
+```bash
+# 仅支持 Linux x86_64 和 Python 3.8-3.10
+pip install 'yolo-demo[rknn]'
 ```
 
 ### NVIDIA Jetson (TensorRT)
@@ -423,20 +435,6 @@ scale: 0.5
 fliplr: 0.5
 ```
 
-### RK3588 配置
-
-```yaml
-# configs/rk3588.yaml
-export:
-  opset: 11
-  dynamic: true
-  simplify: true
-
-inference:
-  conf_threshold: 0.25
-  iou_threshold: 0.45
-```
-
 ## 测试
 
 ```bash
@@ -460,8 +458,7 @@ yolo-demo/
 ├── pyproject.toml          # 项目配置和依赖
 ├── README.md               # 项目文档
 ├── configs/
-│   ├── default.yaml        # 默认训练配置
-│   └── rk3588.yaml         # RK3588 部署配置
+│   └── default.yaml        # 默认训练配置
 ├── scripts/
 │   ├── coco2yolo.py        # COCO/VOC 转 YOLO 格式工具
 │   ├── export.py           # 导出脚本
@@ -484,7 +481,8 @@ yolo-demo/
 │   ├── training/
 │   │   └── trainer.py      # 训练模块
 │   ├── export/
-│   │   └── onnx_exporter.py # ONNX 导出模块
+│   │   ├── onnx_exporter.py # ONNX 导出模块
+│   │   └── rknn_exporter.py # RKNN 转换模块
 │   ├── ui/
 │   │   ├── webui.py         # Gradio WebUI
 │   │   └── dataset_converter.py  # 数据集转换 UI
@@ -493,7 +491,7 @@ yolo-demo/
 └── tests/
     ├── test_api.py
     ├── test_inference.py
-    └── test_training.py
+    └── test_export.py
 ```
 
 ## 日志配置
@@ -525,7 +523,7 @@ logger.info("Application started")
 
 - 确认使用了 GPU 后端（检查日志输出）
 - 尝试减小输入图像尺寸
-- 考虑导出为 TensorRT 或 RKNN 格式
+- 考虑导出为 TensorRT 或 ONNX 格式
 
 ### 数据集转换失败
 

@@ -3,7 +3,6 @@
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import gradio as gr
 
@@ -156,7 +155,7 @@ def create_dataset_converter_tab() -> gr.Tab:
                     "num_classes": dataset_info.get("nc", 0),
                 }
 
-                status = f"Conversion successful!\n\n"
+                status = "Conversion successful!\n\n"
                 status += f"Classes: {dataset_info.get('nc', 0)}\n"
                 status += f"Images: {num_images}\n"
                 status += f"Labels: {num_labels}\n"

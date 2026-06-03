@@ -3,7 +3,7 @@
 import argparse
 import logging
 import sys
-from pathlib import Path
+from typing import Optional
 
 import yolo_demo
 from yolo_demo.utils import setup_logging
@@ -22,7 +22,8 @@ def main():
         version=f"%(prog)s {yolo_demo.__version__}",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose output",
     )
@@ -41,12 +42,8 @@ def main():
     infer_parser.add_argument(
         "--model", "-m", type=str, default="yolov8n.pt", help="Model path or name"
     )
-    infer_parser.add_argument(
-        "--output", "-o", type=str, default=None, help="Output image path"
-    )
-    infer_parser.add_argument(
-        "--conf", "-c", type=float, default=0.25, help="Confidence threshold"
-    )
+    infer_parser.add_argument("--output", "-o", type=str, default=None, help="Output image path")
+    infer_parser.add_argument("--conf", "-c", type=float, default=0.25, help="Confidence threshold")
 
     # Train command
     train_parser = subparsers.add_parser("train", help="Train a YOLO model")
@@ -57,28 +54,30 @@ def main():
     train_parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
     train_parser.add_argument("--batch", type=int, default=16, help="Batch size")
     train_parser.add_argument("--imgsz", type=int, default=640, help="Image size")
-    train_parser.add_argument(
-        "--output", "-o", type=str, default=None, help="Output directory"
-    )
+    train_parser.add_argument("--output", "-o", type=str, default=None, help="Output directory")
 
     # Export command
-    export_parser = subparsers.add_parser("export", help="Export model to ONNX")
+    export_parser = subparsers.add_parser("export", help="Export model to RKNN")
     export_parser.add_argument("model", type=str, help="Path to model (.pt file)")
     export_parser.add_argument(
-        "--output", "-o", type=str, default=None, help="Output path"
+        "--platform",
+        "-p",
+        type=str,
+        default="rk3588",
+        help="Target platform (rk3588, rk3568, etc.)",
     )
-    export_parser.add_argument("--opset", type=int, default=11, help="ONNX opset version")
     export_parser.add_argument(
-        "--rk3588", action="store_true", help="Export for RK3588 (recommended settings)"
+        "--imgsz",
+        type=int,
+        default=640,
+        help="Input image size (default: 640)",
     )
 
     # WebUI command
     webui_parser = subparsers.add_parser("webui", help="Launch Gradio WebUI")
     webui_parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
     webui_parser.add_argument("--port", type=int, default=7860, help="Port to bind to")
-    webui_parser.add_argument(
-        "--share", action="store_true", help="Create a public Gradio link"
-    )
+    webui_parser.add_argument("--share", action="store_true", help="Create a public Gradio link")
 
     # API command
     api_parser = subparsers.add_parser("api", help="Launch FastAPI server")
@@ -101,17 +100,16 @@ def main():
     elif args.command == "train":
         run_training(args.data, args.model, args.epochs, args.batch, args.imgsz, args.output)
     elif args.command == "export":
-        run_export(args.model, args.output, args.opset, args.rk3588)
+        run_export(args.model, args.platform, args.imgsz)
     elif args.command == "webui":
         run_webui(args.host, args.port, args.share)
     elif args.command == "api":
         run_api(args.host, args.port, args.reload)
 
 
-def run_inference(image: str, model: str, output: str | None, conf: float):
+def run_inference(image: str, model: str, output: Optional[str], conf: float):
     """Run inference on an image."""
     import cv2
-    import numpy as np
 
     from yolo_demo.inference import create_engine
 
@@ -151,11 +149,9 @@ def run_inference(image: str, model: str, output: str | None, conf: float):
         logger.info(f"Output saved to: {output}")
 
 
-def run_training(
-    data: str, model: str, epochs: int, batch: int, imgsz: int, output: str | None
-):
+def run_training(data: str, model: str, epochs: int, batch: int, imgsz: int, output: Optional[str]):
     """Run training."""
-    from yolo_demo.training.trainer import TrainingConfig, Trainer
+    from yolo_demo.training.trainer import Trainer, TrainingConfig
 
     config = TrainingConfig(
         model=model,
@@ -181,19 +177,18 @@ def run_training(
         sys.exit(1)
 
 
-def run_export(model: str, output: str | None, opset: int, rk3588: bool):
-    """Export model to ONNX."""
-    from yolo_demo.export.onnx_exporter import ONNXExporter, prepare_for_rk3588
+def run_export(model: str, platform: str, imgsz: int):
+    """Export model to RKNN."""
+    from yolo_demo.export import pt_to_rknn
 
-    if rk3588:
-        logger.info(f"Exporting {model} for RK3588...")
-        onnx_path = prepare_for_rk3588(model, output)
-    else:
-        logger.info(f"Exporting {model} to ONNX (opset={opset})...")
-        exporter = ONNXExporter(model)
-        onnx_path = exporter.export(output=output, opset=opset)
+    logger.info(f"Exporting {model} to RKNN for {platform}...")
+    rknn_path = pt_to_rknn(
+        model,
+        target_platform=platform,
+        imgsz=imgsz,
+    )
 
-    logger.info(f"Exported to: {onnx_path}")
+    logger.info(f"Exported to: {rknn_path}")
 
 
 def run_webui(host: str, port: int, share: bool):

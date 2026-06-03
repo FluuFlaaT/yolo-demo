@@ -2,13 +2,12 @@
 
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from yolo_demo.training import TrainingConfig, Trainer, TrainingResult
 from yolo_demo.api.schemas import TrainingRequest, TrainingStatusResponse
+from yolo_demo.training import Trainer, TrainingConfig
 
 router = APIRouter(prefix="/train", tags=["training"])
 

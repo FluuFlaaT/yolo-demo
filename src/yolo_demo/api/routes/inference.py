@@ -3,15 +3,14 @@
 import base64
 import io
 import time
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import APIRouter, UploadFile, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
 from PIL import Image
 
-from yolo_demo.inference import create_engine, get_available_backend
 from yolo_demo.api.schemas import Detection, InferenceResponse
+from yolo_demo.inference import create_engine, get_available_backend
 
 router = APIRouter(prefix="/inference", tags=["inference"])
 

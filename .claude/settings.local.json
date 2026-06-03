@@ -4,7 +4,10 @@
       "Bash(uv init:*)",
       "Bash(uv sync:*)",
       "Bash(uv run:*)",
-      "Bash(PYTHONPATH=/Users/nerbai/code/yolo-demo/src uv run:*)"
+      "Bash(PYTHONPATH=/Users/nerbai/code/yolo-demo/src uv run:*)",
+      "Bash(./docker/build_and_convert.sh /Users/nerbai/Downloads/best.onnx)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

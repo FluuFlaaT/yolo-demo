@@ -3,12 +3,12 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 def setup_logging(
     level: int = logging.INFO,
-    log_file: Optional[str | Path] = None,
+    log_file: Optional[Union[str, Path]] = None,
     format_string: Optional[str] = None,
 ) -> None:
     """Setup logging configuration.
@@ -19,9 +19,7 @@ def setup_logging(
         format_string: Custom format string. Uses default if not provided.
     """
     if format_string is None:
-        format_string = (
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        format_string = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     # Create formatter
     formatter = logging.Formatter(format_string)

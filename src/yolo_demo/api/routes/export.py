@@ -1,71 +1,62 @@
 """Export API routes."""
 
-from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-
-from yolo_demo.export import ONNXExporter, prepare_for_rk3588
-from yolo_demo.api.schemas import ExportRequest, ExportResponse
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/export", tags=["export"])
 
+RKNN_SUPPORTED_PLATFORMS = [
+    "rk3588",
+    "rk3576",
+    "rk3566",
+    "rk3568",
+    "rk3562",
+    "rv1103",
+    "rv1106",
+    "rv1103b",
+    "rv1106b",
+    "rk2118",
+    "rv1126b",
+]
 
-@router.post("/onnx", response_model=ExportResponse)
-async def export_onnx(request: ExportRequest):
-    """
-    Export a YOLO model to ONNX format.
 
-    Args:
-        request: ExportRequest with model path and options
+class PTToRKNNRequest(BaseModel):
+    """Request to export YOLO model (pt) to RKNN format."""
 
-    Returns:
-        ExportResponse with path to exported ONNX file
-    """
+    model_path: str = Field(..., description="Path to YOLO model file (.pt)")
+    target_platform: str = Field("rk3588", description="Target Rockchip platform")
+    imgsz: int = Field(640, description="Input image size")
+
+
+class ExportResponse(BaseModel):
+    """Response from export endpoint."""
+
+    success: bool
+    output_path: Optional[str] = None
+    error: Optional[str] = None
+
+
+@router.post("/rknn", response_model=ExportResponse)
+async def export_rknn(request: PTToRKNNRequest):
+    """Export YOLO model (pt) to RKNN format using Ultralytics native export."""
     try:
-        model_path = request.model_path or "yolov8n.pt"
+        from yolo_demo.export import pt_to_rknn
 
-        exporter = ONNXExporter(model_path)
-        onnx_path = exporter.export(
-            opset=request.opset,
-            dynamic=request.dynamic,
-            simplify=request.simplify,
+        if request.target_platform not in RKNN_SUPPORTED_PLATFORMS:
+            return ExportResponse(
+                success=False,
+                error=f"Unsupported platform: {request.target_platform}",
+            )
+
+        rknn_path = pt_to_rknn(
+            request.model_path,
+            target_platform=request.target_platform,
+            imgsz=request.imgsz,
         )
 
-        return ExportResponse(
-            success=True,
-            onnx_path=onnx_path,
-        )
+        return ExportResponse(success=True, output_path=rknn_path)
 
     except Exception as e:
-        return ExportResponse(
-            success=False,
-            error=str(e),
-        )
-
-
-@router.post("/onnx/rk3588", response_model=ExportResponse)
-async def export_onnx_rk3588(model_path: str = "yolov8n.pt"):
-    """
-    Export a YOLO model optimized for RK3588 deployment.
-
-    Uses recommended settings for RKNN compatibility.
-
-    Args:
-        model_path: Path to YOLO model
-
-    Returns:
-        ExportResponse with path to exported ONNX file
-    """
-    try:
-        onnx_path = prepare_for_rk3588(model_path)
-
-        return ExportResponse(
-            success=True,
-            onnx_path=onnx_path,
-        )
-
-    except Exception as e:
-        return ExportResponse(
-            success=False,
-            error=str(e),
-        )
+        return ExportResponse(success=False, error=str(e))

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Optional, Union
 
 import yaml
 from ultralytics import YOLO
@@ -16,7 +16,7 @@ class TrainingConfig:
     model: str = "yolov8n.pt"  # Model variant or path to weights
 
     # Data
-    data: str | None = None  # Path to dataset YAML
+    data: Optional[str] = None  # Path to dataset YAML
 
     # Training hyperparameters
     epochs: int = 100
@@ -27,7 +27,7 @@ class TrainingConfig:
     lrf: float = 0.01
 
     # Device
-    device: str | int | list[int] | None = None  # 'cpu', 0, '0,1', etc.
+    device: Optional[Union[str, int, list[int]]] = None  # 'cpu', 0, '0,1', etc.
 
     # Augmentation
     hsv_h: float = 0.015
@@ -46,14 +46,14 @@ class TrainingConfig:
     optimizer: str = "auto"
     verbose: bool = True
     exist_ok: bool = False
-    project: str | None = None
-    name: str | None = None
+    project: Optional[str] = None
+    name: Optional[str] = None
 
     # Additional kwargs
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_yaml(cls, yaml_path: str | Path) -> "TrainingConfig":
+    def from_yaml(cls, yaml_path: Union[str, Path]) -> "TrainingConfig":
         """Load configuration from YAML file."""
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
@@ -100,19 +100,19 @@ class TrainingResult:
     """Result of a training run."""
 
     success: bool
-    model_path: str | None = None
+    model_path: Optional[str] = None
     metrics: dict[str, float] = field(default_factory=dict)
-    error: str | None = None
+    error: Optional[str] = None
 
 
 class Trainer:
     """YOLO trainer supporting incremental training."""
 
-    def __init__(self, config: TrainingConfig | None = None):
+    def __init__(self, config: Optional[TrainingConfig] = None):
         self.config = config or TrainingConfig()
-        self.model: YOLO | None = None
+        self.model: Optional[YOLO] = None
 
-    def load_pretrained(self, model_path: str | None = None) -> None:
+    def load_pretrained(self, model_path: Optional[str] = None) -> None:
         """
         Load a pretrained model for incremental training.
 
@@ -124,7 +124,7 @@ class Trainer:
 
     def train(
         self,
-        data_yaml: str | Path | None = None,
+        data_yaml: Optional[Union[str, Path]] = None,
         **kwargs: Any,
     ) -> TrainingResult:
         """
@@ -170,7 +170,9 @@ class Trainer:
         except Exception as e:
             return TrainingResult(success=False, error=str(e))
 
-    def export_onnx(self, output: str | Path | None = None, **kwargs: Any) -> str | None:
+    def export_onnx(
+        self, output: Optional[Union[str, Path]] = None, **kwargs: Any
+    ) -> Optional[str]:
         """
         Export trained model to ONNX format.
 

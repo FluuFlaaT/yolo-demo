@@ -58,6 +58,7 @@ class TestInferenceEndpoint:
     def test_infer_image(self, mock_create_engine, client):
         """Test image inference."""
         from yolo_demo.api.routes import inference
+
         inference._engine_cache.clear()
 
         # Setup mock engine
@@ -190,33 +191,20 @@ class TestTrainingEndpoint:
 class TestExportEndpoint:
     """Test export endpoints."""
 
-    @patch("yolo_demo.api.routes.export.ONNXExporter")
-    def test_export_onnx(self, mock_exporter, client):
-        """Test ONNX export."""
-        mock_instance = MagicMock()
-        mock_instance.export.return_value = "/tmp/model.onnx"
-        mock_exporter.return_value = mock_instance
+    @patch("yolo_demo.export.pt_to_rknn")
+    def test_export_rknn(self, mock_pt_to_rknn, client):
+        """Test PT to RKNN export."""
+        mock_pt_to_rknn.return_value = "/tmp/model.rknn"
 
         response = client.post(
-            "/api/v1/export/onnx",
-            json={"model_path": "yolov8n.pt", "opset": 11},
+            "/api/v1/export/rknn",
+            json={"model_path": "yolov8n.pt", "target_platform": "rk3588"},
         )
 
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert data["onnx_path"] == "/tmp/model.onnx"
-
-    def test_export_onnx_rk3588(self, client):
-        """Test RK3588 export endpoint."""
-        # This will fail without a real model, but tests the endpoint exists
-        response = client.post(
-            "/api/v1/export/onnx/rk3588",
-            params={"model_path": "yolov8n.pt"},
-        )
-
-        # Endpoint should exist, may fail due to model download
-        assert response.status_code in [200, 500]
+        assert data["output_path"] == "/tmp/model.rknn"
 
 
 class TestBackendEndpoint:
