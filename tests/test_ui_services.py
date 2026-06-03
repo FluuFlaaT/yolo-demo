@@ -1,15 +1,29 @@
 """Tests for UI service layer — InferenceService, TrainingService, ExportService, DatasetService."""
 
-from unittest.mock import MagicMock, patch
+import logging
+from unittest.mock import MagicMock, mock_open, patch
 
 import numpy as np
 import pytest
 
 from yolo_demo.inference import Detection, DetectionResult
+from yolo_demo.training.trainer import TrainingResult
+from yolo_demo.ui.services.dataset_service import convert_dataset, extract_voc_zip
+from yolo_demo.ui.services.export_service import (
+    check_rknn_availability,
+    export_onnx_to_rknn,
+    export_pt_to_rknn,
+)
 from yolo_demo.ui.services.inference_service import (
     format_detections,
     resolve_model_path,
     run_inference,
+)
+from yolo_demo.ui.services.training_service import (
+    TrainingJobConfig,
+    TrainingSession,
+    TrainingSessionManager,
+    _SessionLogHandler,
 )
 
 
@@ -201,17 +215,6 @@ class TestRunInference:
         result = run_inference(img, "yolov8n.pt", None, 0.5)
         assert "error" in result
         assert "GPU out of memory" in result["error"]
-
-
-# ───────────────────────────── Training Service ──────────────────────────────
-
-from yolo_demo.training.trainer import TrainingResult
-from yolo_demo.ui.services.training_service import (
-    TrainingJobConfig,
-    TrainingSession,
-    TrainingSessionManager,
-    _SessionLogHandler,
-)
 
 
 class TestTrainingJobConfig:
@@ -471,7 +474,6 @@ class TestSessionLogHandler:
 
     def test_emit_puts_record_in_queue(self):
         """Log records are forwarded to the queue."""
-        import logging
         import queue
 
         q = queue.Queue()
@@ -489,21 +491,10 @@ class TestSessionLogHandler:
         assert "hello world" in msg
 
 
-# ────────────────────────────── Export Service ───────────────────────────────
-
-from unittest.mock import mock_open, patch as _patch
-
-from yolo_demo.ui.services.export_service import (
-    check_rknn_availability,
-    export_onnx_to_rknn,
-    export_pt_to_rknn,
-)
-
-
 class TestCheckRknnAvailability:
     """Tests for check_rknn_availability."""
 
-    @_patch("yolo_demo.ui.services.export_service.check_rknn_availability")
+    @patch("yolo_demo.ui.services.export_service.check_rknn_availability")
     def test_returns_false_when_not_installed(self, mock_check):
         """When rknn-toolkit2 is not installed, returns (False, msg)."""
         mock_check.return_value = (
@@ -525,8 +516,8 @@ class TestCheckRknnAvailability:
 class TestExportPtToRknn:
     """Tests for export_pt_to_rknn."""
 
-    @_patch("yolo_demo.ui.services.export_service.pt_to_rknn")
-    @_patch("yolo_demo.ui.services.export_service.shutil.make_archive")
+    @patch("yolo_demo.ui.services.export_service.pt_to_rknn")
+    @patch("yolo_demo.ui.services.export_service.shutil.make_archive")
     def test_success(self, mock_archive, mock_pt_to_rknn):
         """Export succeeds and creates a zip."""
         mock_pt_to_rknn.return_value = "/tmp/model_rknn_model"
@@ -558,16 +549,11 @@ class TestExportOnnxToRknn:
         assert path is None
 
 
-# ───────────────────────────── Dataset Service ───────────────────────────────
-
-from yolo_demo.ui.services.dataset_service import convert_dataset, extract_voc_zip
-
-
 class TestExtractVocZip:
     """Tests for extract_voc_zip."""
 
-    @_patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
-    @_patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
+    @patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
+    @patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
     def test_finds_vocdevkit(self, mock_mkdtemp, mock_zipfile_cls):
         """Extracts zip and finds VOCdevkit directory."""
         from pathlib import Path
@@ -588,8 +574,8 @@ class TestExtractVocZip:
         result = extract_voc_zip("dataset.zip")
         assert "VOCdevkit" in result
 
-    @_patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
-    @_patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
+    @patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
+    @patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
     def test_no_vocdevkit_found(self, mock_mkdtemp, mock_zipfile_cls):
         """Raises FileNotFoundError when no VOCdevkit directory exists."""
         from pathlib import Path
@@ -612,9 +598,9 @@ class TestExtractVocZip:
 class TestConvertDataset:
     """Tests for convert_dataset."""
 
-    @_patch("builtins.open", new_callable=mock_open, read_data="nc: 5\nnames: [a, b, c, d, e]")
-    @_patch("yolo_demo.ui.services.dataset_service.yaml.safe_load")
-    @_patch("yolo_demo.ui.services.dataset_service.convert_coco_to_yolo")
+    @patch("builtins.open", new_callable=mock_open, read_data="nc: 5\nnames: [a, b, c, d, e]")
+    @patch("yolo_demo.ui.services.dataset_service.yaml.safe_load")
+    @patch("yolo_demo.ui.services.dataset_service.convert_coco_to_yolo")
     def test_convert_coco_success(self, mock_convert, mock_yaml_load, mock_file):
         """COCO conversion succeeds."""
         mock_convert.return_value = "/tmp/output/dataset.yaml"
