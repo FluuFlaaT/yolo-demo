@@ -554,20 +554,15 @@ class TestExtractVocZip:
 
     @patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
     @patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
-    def test_finds_vocdevkit(self, mock_mkdtemp, mock_zipfile_cls):
-        """Extracts zip and finds VOCdevkit directory."""
+    def test_finds_vocdevkit_layout(self, mock_mkdtemp, mock_zipfile_cls):
         from pathlib import Path
 
-        extract_root = Path("/tmp/fake_extract")
+        extract_root = Path("/tmp/fake_vocdevkit")
         mock_mkdtemp.return_value = str(extract_root)
 
-        # Create mock extract_dir structure
         mock_zipfile = MagicMock()
-
         def _extractall(dest):
-            voc_devkit = dest / "VOCdevkit"
-            voc_devkit.mkdir(parents=True, exist_ok=True)
-
+            (dest / "VOCdevkit" / "VOC2007" / "Annotations").mkdir(parents=True, exist_ok=True)
         mock_zipfile.__enter__.return_value.extractall.side_effect = _extractall
         mock_zipfile_cls.return_value = mock_zipfile
 
@@ -576,22 +571,54 @@ class TestExtractVocZip:
 
     @patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
     @patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
-    def test_no_vocdevkit_found(self, mock_mkdtemp, mock_zipfile_cls):
-        """Raises FileNotFoundError when no VOCdevkit directory exists."""
+    def test_finds_flat_layout(self, mock_mkdtemp, mock_zipfile_cls):
         from pathlib import Path
 
-        extract_root = Path("/tmp/fake_extract_empty")
+        extract_root = Path("/tmp/fake_flat_voc")
         mock_mkdtemp.return_value = str(extract_root)
 
         mock_zipfile = MagicMock()
+        def _extractall(dest):
+            (dest / "Annotations").mkdir(parents=True, exist_ok=True)
+            (dest / "JPEGImages").mkdir(parents=True, exist_ok=True)
+        mock_zipfile.__enter__.return_value.extractall.side_effect = _extractall
+        mock_zipfile_cls.return_value = mock_zipfile
 
+        result = extract_voc_zip("dataset.zip")
+        assert result == str(extract_root)
+
+    @patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
+    @patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
+    def test_finds_year_subdir(self, mock_mkdtemp, mock_zipfile_cls):
+        from pathlib import Path
+
+        extract_root = Path("/tmp/fake_year_voc")
+        mock_mkdtemp.return_value = str(extract_root)
+
+        mock_zipfile = MagicMock()
+        def _extractall(dest):
+            (dest / "VOC2007" / "Annotations").mkdir(parents=True, exist_ok=True)
+        mock_zipfile.__enter__.return_value.extractall.side_effect = _extractall
+        mock_zipfile_cls.return_value = mock_zipfile
+
+        result = extract_voc_zip("dataset.zip")
+        assert result == str(extract_root)
+
+    @patch("yolo_demo.ui.services.dataset_service.zipfile.ZipFile")
+    @patch("yolo_demo.ui.services.dataset_service.tempfile.mkdtemp")
+    def test_no_dataset_found(self, mock_mkdtemp, mock_zipfile_cls):
+        from pathlib import Path
+
+        extract_root = Path("/tmp/fake_empty_voc")
+        mock_mkdtemp.return_value = str(extract_root)
+
+        mock_zipfile = MagicMock()
         def _extractall_empty(dest):
             (dest / "other_dir").mkdir(parents=True, exist_ok=True)
-
         mock_zipfile.__enter__.return_value.extractall.side_effect = _extractall_empty
         mock_zipfile_cls.return_value = mock_zipfile
 
-        with pytest.raises(FileNotFoundError, match="VOCdevkit"):
+        with pytest.raises(FileNotFoundError, match="VOC"):
             extract_voc_zip("dataset.zip")
 
 

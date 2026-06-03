@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -136,17 +137,33 @@ def create_training_tab() -> gr.Tab:
     """Create the training tab using TrainingService."""
     with gr.Tab("Training", id="training") as tab:
         gr.Markdown("### Incremental Training")
-        gr.Markdown("Upload a dataset in YOLO format and train a custom model")
+        gr.Markdown(
+            "Upload a YOLO-format dataset (.zip from Dataset Converter, or .yaml)."
+        )
 
         with gr.Row():
             with gr.Column():
-                dataset_yaml = gr.File(label="Dataset YAML (.yaml)")
+                dataset_input = gr.File(
+                    label="Dataset (.zip or .yaml)",
+                    file_types=[".zip", ".yaml", ".yml"],
+                )
+
+                model_source = gr.Radio(
+                    choices=["Pretrained (by name)", "Custom (.pt file)"],
+                    value="Pretrained (by name)",
+                    label="Base Model Source",
+                )
                 base_model_name = gr.Textbox(
                     label="Base Model Name",
                     placeholder="e.g., yolov8n.pt",
                     value="yolov8n.pt",
+                    visible=True,
                 )
-                base_model_file = gr.File(label="Or Upload Base Model (.pt)")
+                base_model_file = gr.File(
+                    label="Custom Base Model",
+                    file_types=[".pt"],
+                    visible=False,
+                )
 
                 with gr.Accordion("Training Parameters", open=False):
                     device_preset = gr.Dropdown(
@@ -208,17 +225,36 @@ def create_training_tab() -> gr.Tab:
             outputs=[epochs, batch_size, imgsz, lr0],
         )
 
+        def _toggle_model_source(source):
+            if source == "Pretrained (by name)":
+                return gr.update(visible=True), gr.update(visible=False)
+            return gr.update(visible=False), gr.update(visible=True)
+
+        model_source.change(
+            fn=_toggle_model_source,
+            inputs=[model_source],
+            outputs=[base_model_name, base_model_file],
+        )
+
         def _on_training(
-            dataset_file, model_name_val, model_file,
+            dataset_file, source, model_name_val, model_file,
             epochs_val, batch_val, imgsz_val, lr0_val, output_val,
         ) -> Generator:
             nonlocal active_job_id
 
             if dataset_file is None:
-                yield "Error: Dataset YAML is required", None
+                yield "Error: Please upload a dataset (.zip or .yaml)", None
+                return
+
+            try:
+                dataset_path = _prepare_dataset_dir(dataset_file)
+            except Exception as e:
+                yield f"Error preparing dataset: {e}", None
                 return
 
             custom_path = model_file.name if model_file is not None else None
+            if source == "Pretrained (by name)":
+                custom_path = None
             try:
                 model_path = resolve_model_path(model_name_val, custom_path)
             except ValueError as e:
@@ -227,7 +263,7 @@ def create_training_tab() -> gr.Tab:
 
             config = TrainingJobConfig(
                 model_path=model_path,
-                dataset_path=dataset_file.name,
+                dataset_path=dataset_path,
                 epochs=int(epochs_val),
                 batch_size=int(batch_val),
                 imgsz=int(imgsz_val),
@@ -276,7 +312,7 @@ def create_training_tab() -> gr.Tab:
 
         train_btn.click(
             fn=_on_training,
-            inputs=[dataset_yaml, base_model_name, base_model_file,
+            inputs=[dataset_input, model_source, base_model_name, base_model_file,
                     epochs, batch_size, imgsz, lr0, output_dir],
             outputs=[training_status, training_output],
         )
@@ -300,6 +336,41 @@ def _copy_model_to_temp(model_path: str) -> Optional[str]:
     except Exception as e:
         logger.warning("Could not copy model: %s", e)
         return None
+
+
+def _prepare_dataset_dir(file_obj) -> str:
+    """Resolve a dataset upload to a yaml path, extracting zips if needed.
+
+    Accepts .zip (from Dataset Converter) or standalone .yaml.
+    For zips: extracts, rewrites yaml ``path`` to ``.`` so it works
+    regardless of extraction location (critical for remote deployments).
+    """
+    import yaml
+
+    src = file_obj.name
+    if src.lower().endswith(".zip"):
+        extract_dir = Path(tempfile.mkdtemp(prefix="yolo_training_ds_"))
+        with zipfile.ZipFile(src) as zf:
+            zf.extractall(extract_dir)
+
+        candidates = list(extract_dir.rglob("dataset.yaml")) + list(
+            extract_dir.rglob("*.yaml"))
+        if not candidates:
+            raise FileNotFoundError(
+                "No dataset.yaml found in zip. Use the zip from "
+                "Dataset Converter, or upload a .yaml directly.")
+        yaml_file = candidates[0]
+
+        with open(yaml_file) as f:
+            data = yaml.safe_load(f)
+        data["path"] = "."
+        with open(yaml_file, "w") as f:
+            yaml.dump(data, f)
+
+        logger.info("Extracted dataset zip to %s", extract_dir)
+        return str(yaml_file)
+
+    return src
 
 
 def create_export_tab() -> gr.Tab:

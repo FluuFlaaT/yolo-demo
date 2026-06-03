@@ -2,7 +2,6 @@
 """Export script for YOLO models."""
 
 import argparse
-import sys
 
 from yolo_demo.export.onnx_exporter import ONNXExporter, prepare_for_rk3588
 
