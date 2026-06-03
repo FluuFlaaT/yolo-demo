@@ -1,5 +1,9 @@
 """FastAPI application for YOLO Demo API."""
 
+import logging
+import os
+from contextlib import asynccontextmanager
+
 import torch
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +11,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..inference import get_available_backend
 from .routes import export, inference, training
 from .schemas import HealthResponse, ModelsResponse
+
+logger = logging.getLogger(__name__)
+
+
+# -- graceful shutdown support -------------------------------------------------
+
+def _shutdown_engines() -> None:
+    """Release all cached inference engines on shutdown."""
+    from .routes.inference import _engine_cache
+
+    if _engine_cache:
+        logger.info("Shutting down %d cached inference engine(s)...", len(_engine_cache))
+        for model_path, (engine, _) in list(_engine_cache.items()):
+            try:
+                engine.__exit__(None, None, None)
+            except Exception:
+                logger.warning("Error closing engine for %s", model_path, exc_info=True)
+        _engine_cache.clear()
+        logger.info("All engines released.")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: startup and shutdown hooks."""
+    logger.info("YOLO Demo API starting up...")
+    yield
+    logger.info("YOLO Demo API shutting down...")
+    _shutdown_engines()
 
 
 def create_app() -> FastAPI:
@@ -17,13 +49,24 @@ def create_app() -> FastAPI:
         version="0.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
-    # CORS middleware
+    # CORS — configurable via CORS_ORIGINS env var (comma-separated).
+    # In production, set to your frontend domain(s).
+    # Default: "*" for development; credentials are disabled when wildcard is used.
+    cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
+    if cors_origins_env:
+        allow_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+        allow_credentials = True
+    else:
+        allow_origins = ["*"]
+        allow_credentials = False  # forbidden with wildcard per Fetch spec
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=allow_origins,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

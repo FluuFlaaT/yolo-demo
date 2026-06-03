@@ -1,0 +1,72 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# YOLO Demo — one-click Docker Compose deployment
+#
+# Quick start:
+#   docker compose up -d              # build & start both services
+#   docker compose up -d api          # start API only
+#   docker compose logs -f api        # tail API logs
+#   docker compose down -v            # tear down (including model volume)
+#
+# Volumes:
+#   Place your model weights in the 'models' named volume:
+#     docker compose cp yolov8n.pt api:/models/
+#   Or mount a host directory by uncommenting the bind mount below.
+# ──────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+  # ── FastAPI REST API (health check → /health, docs → /docs) ──────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yolo-demo:0.1.0
+    container_name: yolo-demo-api
+    ports:
+      - "8000:8000"
+    environment:
+      SERVICE_MODE: api
+      API_PORT: "8000"
+      CORS_ORIGINS: "${CORS_ORIGINS:-*}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    volumes:
+      - models:/models
+      # For local development, mount a host directory instead:
+      # - ./best_rknn_model:/models:ro
+    restart: unless-stopped
+    # Docker Compose respects the HEALTHCHECK defined in the Dockerfile;
+    # the explicit healthcheck block below makes dependents wait reliably.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Gradio WebUI (browser-based detection playground) ────────────────────
+  webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yolo-demo:0.1.0
+    container_name: yolo-demo-webui
+    ports:
+      - "7860:7860"
+    environment:
+      SERVICE_MODE: webui
+      WEBUI_PORT: "7860"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      # Point the WebUI at the API container (container-name DNS):
+      API_BASE_URL: "${API_BASE_URL:-http://api:8000}"
+    volumes:
+      - models:/models
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+# ── Named volume for model weights (persists across restarts) ─────────────
+volumes:
+  models:
+    driver: local

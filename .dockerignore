@@ -1,0 +1,86 @@
+# ── Python virtual environment ───────────────────────────────────────────────
+.venv/
+
+# ── Version control ──────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── Testing & coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+cov_html/
+cov.xml
+htmlcov/
+.tox/
+tests/
+test-pics/
+
+# ── Linting ──────────────────────────────────────────────────────────────────
+.ruff_cache/
+
+# ── Python bytecode ──────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Build & packaging artifacts ──────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+wheels/
+
+# ── Model weights — loaded at runtime via /models volume, never baked in ─────
+*.pt
+*.pth
+*.onnx
+*.rknn
+rknn_models/
+best_rknn_model/
+yolo26ss_rknn_model/
+yolov8n_rknn_model/
+weights/
+
+# ── Training / inference output ──────────────────────────────────────────────
+runs/
+output/
+calib_images/
+calib.txt
+
+# ── Docker deployment files (not needed inside image) ────────────────────────
+docker/
+docker-compose.yml
+Dockerfile
+
+# ── Documentation ────────────────────────────────────────────────────────────
+docs/
+README.md
+PROJECT_STRUCTURE.md
+AGENTS.md
+
+# ── OS clutter ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE / editor ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Environment & secrets ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Gradio caches ────────────────────────────────────────────────────────────
+gradio_cached_examples/
+tmp/
+
+# ── Claude / OpenCode metadata (dev tooling, not runtime) ────────────────────
+.claude/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
