@@ -34,12 +34,17 @@ def _patch_gradio_client():
 
 _patch_gradio_client()
 
-import gradio as gr
+import gradio as gr  # noqa: E402
 
-from ..export import pt_to_rknn
-from ..inference import Detection, DetectionResult, create_engine, get_available_backend
-from ..training.trainer import Trainer, TrainingConfig
-from .dataset_converter import create_dataset_converter_tab
+from ..export import pt_to_rknn  # noqa: E402
+from ..inference import (  # noqa: E402
+    Detection,
+    DetectionResult,
+    create_engine,
+    get_available_backend,
+)
+from ..training.trainer import Trainer, TrainingConfig  # noqa: E402
+from .dataset_converter import create_dataset_converter_tab  # noqa: E402
 
 # Module-level state for the training thread/stop mechanism (single-user demo)
 _stop_event: threading.Event = threading.Event()

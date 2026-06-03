@@ -55,7 +55,7 @@ jobs:
       - run: uv sync --extra dev
 
       - name: Run pytest with coverage
-        run: uv run pytest --cov=src/yolo_demo --tb=short -q
+        run: uv run pytest --cov=src/yolo_demo --tb=short -q -m "not mps"
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
@@ -66,6 +66,30 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  test-mps:
+    name: MPS Inference (macOS / Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.9"
+          enable-cache: true
+
+      - name: Cache ultralytics models
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ultralytics
+          key: ultralytics-models-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ultralytics-models-${{ runner.os }}-
+
+      - run: uv sync --extra dev
+
+      - name: Run MPS inference tests
+        run: uv run pytest -m mps -v --tb=short
 
   docker-smoke:
     name: Docker build & smoke test
