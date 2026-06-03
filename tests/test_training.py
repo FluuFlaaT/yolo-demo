@@ -56,6 +56,29 @@ imgsz: 320
         assert d["batch"] == 32
         assert d["imgsz"] == 640
 
+    def test_to_dict_with_extra_kwargs(self):
+        """Test to_dict includes extra_kwargs."""
+        config = TrainingConfig(extra_kwargs={"custom_param": 42, "freeze": 10})
+        d = config.to_dict()
+        assert d["custom_param"] == 42
+        assert d["freeze"] == 10
+
+    def test_to_dict_excludes_none(self):
+        """Test to_dict excludes optional fields when None."""
+        config = TrainingConfig(project=None, name=None, device=None)
+        d = config.to_dict()
+        assert "project" not in d
+        assert "name" not in d
+        assert "device" not in d
+
+    def test_to_dict_includes_optional_when_set(self):
+        """Test to_dict includes optional fields when set."""
+        config = TrainingConfig(project="/tmp/runs", name="exp1", device="cpu")
+        d = config.to_dict()
+        assert d["project"] == "/tmp/runs"
+        assert d["name"] == "exp1"
+        assert d["device"] == "cpu"
+
 
 class TestTrainer:
     """Test Trainer class."""
@@ -128,6 +151,36 @@ class TestTrainer:
 
         with pytest.raises(RuntimeError, match="No model loaded"):
             trainer.export_onnx()
+
+    @patch("yolo_demo.training.trainer.YOLO")
+    def test_trainer_train_auto_loads_model(self, mock_yolo):
+        """Test that train() auto-loads model when none is preloaded."""
+        mock_model = MagicMock()
+        mock_yolo.return_value = mock_model
+        mock_model.model_save_dir = "/tmp/runs/detect/train"
+        mock_result = MagicMock()
+        mock_result.result_dict = {}
+        mock_model.train.return_value = mock_result
+
+        trainer = Trainer()
+        result = trainer.train(data_yaml="data.yaml")
+
+        assert result.success is True
+        assert mock_yolo.call_count == 1  # auto-load via train
+
+    @patch("yolo_demo.training.trainer.YOLO")
+    def test_trainer_export_on_none_path(self, mock_yolo):
+        """Test export without explicit output path."""
+        mock_model = MagicMock()
+        mock_yolo.return_value = mock_model
+        mock_model.export.return_value = "/tmp/model.onnx"
+
+        trainer = Trainer()
+        trainer.load_pretrained("yolov8n.pt")
+        onnx_path = trainer.export_onnx()
+
+        assert mock_model.export.called
+        assert onnx_path == "/tmp/model.onnx"
 
 
 class TestTrainingResult:
