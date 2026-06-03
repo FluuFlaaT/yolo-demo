@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 WORKDIR /build
 
 # ── Layer 1: dependency manifests (cached aggressively) ────────────────────
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
