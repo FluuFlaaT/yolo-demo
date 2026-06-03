@@ -1,11 +1,10 @@
 """Tests for training module."""
 
-import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
-import yaml
+from unittest.mock import MagicMock, patch
 
-from yolo_demo.training.trainer import TrainingConfig, Trainer, TrainingResult
+import pytest
+
+from yolo_demo.training.trainer import Trainer, TrainingConfig, TrainingResult
 
 
 class TestTrainingConfig:

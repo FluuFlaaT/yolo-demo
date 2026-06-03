@@ -1,7 +1,8 @@
 """Tests for export module."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from yolo_demo.export.rknn_exporter import RKNN_SUPPORTED_PLATFORMS, pt_to_rknn
 

@@ -1,10 +1,9 @@
 """Smoke tests for CLI entry point and UI modules."""
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
-import pytest
 
 
 class TestMainModule:
@@ -90,8 +89,8 @@ class TestWebUIModule:
 
     def test_draw_detections(self):
         """Test draw_detections overlays boxes on image."""
-        from yolo_demo.ui.webui import draw_detections
         from yolo_demo.inference import Detection
+        from yolo_demo.ui.webui import draw_detections
 
         img = np.zeros((480, 640, 3), dtype=np.uint8)
         dets = [

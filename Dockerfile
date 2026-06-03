@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 WORKDIR /build
 
 # ── Layer 1: dependency manifests (cached aggressively) ────────────────────
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
@@ -39,7 +39,7 @@ FROM python:3.9-slim AS runtime
 # ── System libraries required by OpenCV at runtime ─────────────────────────
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0 \
         libsm6 \
         libxext6 \
@@ -57,6 +57,9 @@ COPY --from=build --chown=appuser:appuser /build/src          /opt/app/src
 COPY --from=build --chown=appuser:appuser /build/configs       /opt/app/configs
 COPY --from=build --chown=appuser:appuser /build/scripts       /opt/app/scripts
 COPY --from=build --chown=appuser:appuser /build/pyproject.toml /opt/app/
+
+# ── Fix shebangs: uv scripts reference /build/.venv/bin/python, but venv is at /opt/venv
+RUN mkdir -p /build && ln -s /opt/venv /build/.venv
 
 # ── Environment ───────────────────────────────────────────────────────────
 ENV VIRTUAL_ENV=/opt/venv \

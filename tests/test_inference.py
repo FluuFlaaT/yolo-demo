@@ -1,18 +1,14 @@
 """Tests for inference module."""
 
-import json
-import os
-import tempfile
+
+from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
-from unittest.mock import MagicMock, patch
 
 from yolo_demo.inference import (
     CPUBackend,
     Detection,
     DetectionResult,
-    MPSBackend,
     create_engine,
     get_available_backend,
 )
@@ -150,7 +146,7 @@ class TestCreateEngine:
     def test_create_engine_cuda_priority(self, mock_cuda):
         """Test CUDA has priority."""
         with patch("yolo_demo.inference.cuda_backend.YOLO", MagicMock()):
-            engine = create_engine("yolov8n.pt")
+            _ = create_engine("yolov8n.pt")
             # Would be CUDABackend if CUDA available
             # For testing, we just check the logic path
 
@@ -201,9 +197,9 @@ class TestMPSBackend:
         mock_model = MagicMock()
         mock_yolo.return_value = mock_model
 
-        from yolo_demo.inference.mps_backend import MPSBackend as MB
+        from yolo_demo.inference.mps_backend import MPSBackend
 
-        backend = MB("yolov8n.pt")
+        backend = MPSBackend("yolov8n.pt")
         backend.device = "mps"
         backend.model_path = __import__("pathlib").Path("yolov8n.pt")
         backend.load_model()
@@ -231,9 +227,9 @@ class TestMPSBackend:
         mock_model.predict.return_value = [mock_result]
         mock_model.names = {0: "person"}
 
-        from yolo_demo.inference.mps_backend import MPSBackend as MB
+        from yolo_demo.inference.mps_backend import MPSBackend
 
-        backend = MB("yolov8n.pt")
+        backend = MPSBackend("yolov8n.pt")
         backend.device = "mps"
         backend.model_path = __import__("pathlib").Path("yolov8n.pt")
         backend.model = mock_model
@@ -252,9 +248,9 @@ class TestMPSBackend:
         mock_model = MagicMock()
         mock_yolo.return_value = mock_model
 
-        from yolo_demo.inference.mps_backend import MPSBackend as MB
+        from yolo_demo.inference.mps_backend import MPSBackend
 
-        backend = MB("yolov8n.pt")
+        backend = MPSBackend("yolov8n.pt")
         backend.device = "mps"
         backend.model_path = __import__("pathlib").Path("yolov8n.pt")
         backend.load_model()

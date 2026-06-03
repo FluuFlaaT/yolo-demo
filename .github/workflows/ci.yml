@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.9"
+          enable-cache: true
+
+      - run: uv sync --extra dev
+
+      - name: Run ruff
+        run: uv run ruff check src/ tests/
+
+  test:
+    name: Test (py${{ matrix.python-version }} / ${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+      - run: uv sync --extra dev
+
+      - name: Run pytest with coverage
+        run: uv run pytest --cov=src/yolo_demo --tb=short -q -m "not mps"
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          files: cov.xml
+          flags: unit
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  test-mps:
+    name: MPS Inference (macOS / Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.9"
+          enable-cache: true
+
+      - name: Cache ultralytics models
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ultralytics
+          key: ultralytics-models-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ultralytics-models-${{ runner.os }}-
+
+      - run: uv sync --extra dev
+
+      - name: Run MPS inference tests
+        run: uv run pytest -m mps -v --tb=short --no-cov
+
+  docker-smoke:
+    name: Docker build & smoke test
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: yolo-demo:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — API mode
+        run: |
+          docker run -d --name yolo-demo-smoke yolo-demo:ci-${{ github.sha }}
+          sleep 8
+          # Check if container is still alive
+          if ! docker ps --format '{{.Names}}' | grep -q yolo-demo-smoke; then
+            echo "::warning::Container exited early. Dumping logs:"
+            docker logs yolo-demo-smoke || true
+            docker rm -f yolo-demo-smoke || true
+            exit 1
+          fi
+          docker exec yolo-demo-smoke curl -sf http://localhost:8000/health
+          docker stop yolo-demo-smoke && docker rm yolo-demo-smoke

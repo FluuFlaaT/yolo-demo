@@ -1,9 +1,9 @@
 """Tests for API module."""
 
 import io
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
@@ -72,8 +72,8 @@ class TestInferenceEndpoint:
         mock_create_engine.return_value = mock_engine
 
         # Create test image
-        from PIL import Image
         import numpy as np
+        from PIL import Image
 
         img = Image.fromarray(np.zeros((640, 640, 3), dtype=np.uint8))
         img_bytes = io.BytesIO()
@@ -93,8 +93,8 @@ class TestInferenceEndpoint:
     @patch("yolo_demo.api.routes.inference.create_engine")
     def test_infer_image_with_detections(self, mock_create_engine, client):
         """Test inference with detections."""
-        from yolo_demo.inference import Detection, DetectionResult
         from yolo_demo.api.routes import inference
+        from yolo_demo.inference import Detection, DetectionResult
 
         # Clear engine cache
         inference._engine_cache.clear()
@@ -117,8 +117,8 @@ class TestInferenceEndpoint:
         mock_engine.model.names = {0: "person"}
         mock_create_engine.return_value = mock_engine
 
-        from PIL import Image
         import numpy as np
+        from PIL import Image
 
         img = Image.fromarray(np.zeros((640, 640, 3), dtype=np.uint8))
         img_bytes = io.BytesIO()
@@ -152,9 +152,10 @@ class TestInferenceEndpoint:
         mock_engine.predict.return_value = mock_result
         mock_create_engine.return_value = mock_engine
 
-        from PIL import Image
-        import numpy as np
         import base64
+
+        import numpy as np
+        from PIL import Image
 
         img = Image.fromarray(np.zeros((640, 640, 3), dtype=np.uint8))
         buf = io.BytesIO()
@@ -198,9 +199,10 @@ class TestInferenceEndpoint:
     @patch("yolo_demo.api.routes.inference.create_engine")
     def test_engine_cache_ttl_eviction(self, mock_create_engine):
         """Test engine eviction when TTL expires."""
-        from yolo_demo.api.routes import inference
-        from yolo_demo.api.routes.inference import get_engine, _CACHE_TTL_SECONDS
         import time as time_mod
+
+        from yolo_demo.api.routes import inference
+        from yolo_demo.api.routes.inference import _CACHE_TTL_SECONDS, get_engine
 
         inference._engine_cache.clear()
 
@@ -214,16 +216,17 @@ class TestInferenceEndpoint:
         )
 
         # Getting a different model should evict the expired one
-        e = get_engine("new_model.pt")
+        _ = get_engine("new_model.pt")
         assert "old_model.pt" not in inference._engine_cache
         assert "new_model.pt" in inference._engine_cache
 
     @patch("yolo_demo.api.routes.inference.create_engine")
     def test_engine_cache_max_size_eviction(self, mock_create_engine):
         """Test eviction when cache exceeds max size."""
-        from yolo_demo.api.routes import inference
-        from yolo_demo.api.routes.inference import get_engine, _MAX_CACHE_SIZE
         import time as time_mod
+
+        from yolo_demo.api.routes import inference
+        from yolo_demo.api.routes.inference import _MAX_CACHE_SIZE, get_engine
 
         inference._engine_cache.clear()
 
@@ -243,9 +246,10 @@ class TestInferenceEndpoint:
     @patch("yolo_demo.api.routes.inference.create_engine")
     def test_engine_close_error_handled(self, mock_create_engine):
         """Test that engine close errors are handled gracefully."""
-        from yolo_demo.api.routes import inference
-        from yolo_demo.api.routes.inference import _close_engine, get_engine
         import time as time_mod
+
+        from yolo_demo.api.routes import inference
+        from yolo_demo.api.routes.inference import get_engine
 
         inference._engine_cache.clear()
 
@@ -261,6 +265,9 @@ class TestInferenceEndpoint:
         # This should not raise — error is swallowed with log
         get_engine("other.pt")
         assert "bad_engine.pt" not in inference._engine_cache
+
+    @patch("yolo_demo.api.routes.inference.create_engine")
+    def test_engine_eviction_via_exit(self, mock_create_engine):
         """Test engine eviction via __exit__."""
         from yolo_demo.api.routes import inference
         from yolo_demo.api.routes.inference import _close_engine, get_engine
@@ -440,17 +447,18 @@ class TestAppLifecycle:
 
     def test_shutdown_engines_empty(self):
         """Test shutdown with no cached engines."""
-        from yolo_demo.api.routes import inference
         from yolo_demo.api.app import _shutdown_engines
+        from yolo_demo.api.routes import inference
 
         inference._engine_cache.clear()
         _shutdown_engines()
 
     def test_shutdown_engines_with_cache(self):
         """Test shutdown releases cached engines."""
-        from yolo_demo.api.routes import inference
-        from yolo_demo.api.app import _shutdown_engines
         from unittest.mock import MagicMock
+
+        from yolo_demo.api.app import _shutdown_engines
+        from yolo_demo.api.routes import inference
 
         mock_engine = MagicMock()
         inference._engine_cache["test.pt"] = (mock_engine, 0)
@@ -462,9 +470,10 @@ class TestAppLifecycle:
 
     def test_shutdown_engines_handles_close_error(self):
         """Test shutdown handles engine close errors gracefully."""
-        from yolo_demo.api.routes import inference
-        from yolo_demo.api.app import _shutdown_engines
         from unittest.mock import MagicMock
+
+        from yolo_demo.api.app import _shutdown_engines
+        from yolo_demo.api.routes import inference
 
         mock_engine = MagicMock()
         mock_engine.__exit__.side_effect = RuntimeError("Close failed")

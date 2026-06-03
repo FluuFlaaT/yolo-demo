@@ -1,10 +1,6 @@
 """Tests for utils/logging module."""
 
 import logging
-import os
-import tempfile
-
-import pytest
 
 from yolo_demo.utils.logging import get_logger, setup_logging
 
@@ -34,7 +30,7 @@ class TestSetupLogging:
 
     def test_setup_logging_clears_previous_handlers(self):
         root = logging.getLogger()
-        initial_count = len(root.handlers)
+        _ = len(root.handlers)  # exercise handler count before setup
         setup_logging(level=logging.INFO)
         setup_logging(level=logging.INFO)
         after_count = len(root.handlers)
