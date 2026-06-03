@@ -2,7 +2,7 @@
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import numpy as np
 from ultralytics import YOLO
@@ -13,7 +13,7 @@ from .engine import Detection, DetectionResult, InferenceEngine
 class CPUBackend(InferenceEngine):
     """YOLO inference backend using CPU (fallback option)."""
 
-    def __init__(self, model_path: str | Path):
+    def __init__(self, model_path: Union[str, Path]):
         super().__init__(model_path)
         self.device = "cpu"
 

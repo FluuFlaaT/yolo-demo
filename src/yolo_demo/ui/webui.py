@@ -2,23 +2,48 @@
 
 import logging
 import queue
+import shutil
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, Optional
+
+
+# Apply gradio_client compatibility patch for Pydantic v2
+def _patch_gradio_client():
+    """Patch gradio_client to handle Pydantic v2 schemas with boolean additionalProperties."""
+    try:
+        import gradio_client.utils as utils
+
+        original_json_schema_to_python_type = utils._json_schema_to_python_type
+
+        def patched_json_schema_to_python_type(schema, defs=None):
+            """Patched version that handles boolean additionalProperties."""
+            if not isinstance(schema, dict):
+                if schema is True:
+                    return "Any"
+                elif schema is False:
+                    return "None"
+                return str(schema)
+            return original_json_schema_to_python_type(schema, defs)
+
+        utils._json_schema_to_python_type = patched_json_schema_to_python_type
+    except Exception:
+        pass  # Patching failed, but continue anyway
+
+
+_patch_gradio_client()
 
 import gradio as gr
 
-from ..export.onnx_exporter import ONNXExporter, prepare_for_rk3588
+from ..export import pt_to_rknn
 from ..inference import Detection, DetectionResult, create_engine, get_available_backend
-from ..training.trainer import TrainingConfig, Trainer
-
+from ..training.trainer import Trainer, TrainingConfig
 from .dataset_converter import create_dataset_converter_tab
-from .rknn_validator import create_rknn_validation_tab
 
 # Module-level state for the training thread/stop mechanism (single-user demo)
 _stop_event: threading.Event = threading.Event()
-_train_thread: threading.Thread | None = None
+_train_thread: Optional[threading.Thread] = None
 
 logger = logging.getLogger(__name__)
 
@@ -40,33 +65,6 @@ class _QueueLogHandler(logging.Handler):
             self.q.put_nowait(self.format(record) + "\n")
         except Exception:
             self.handleError(record)
-
-
-# Predefined Ultralytics models
-ULTRALYTICS_MODELS = [
-    # YOLOv8
-    ("YOLOv8n (nano, fastest)", "yolov8n.pt"),
-    ("YOLOv8s (small)", "yolov8s.pt"),
-    ("YOLOv8m (medium)", "yolov8m.pt"),
-    ("YOLOv8l (large)", "yolov8l.pt"),
-    ("YOLOv8x (xlarge, most accurate)", "yolov8x.pt"),
-    # YOLO11
-    ("YOLO11n (nano)", "yolo11n.pt"),
-    ("YOLO11s (small)", "yolo11s.pt"),
-    ("YOLO11m (medium)", "yolo11m.pt"),
-    ("YOLO11l (large)", "yolo11l.pt"),
-    ("YOLO11x (xlarge)", "yolo11x.pt"),
-    # YOLOv9
-    ("YOLOv9c (compact)", "yolov9c.pt"),
-    ("YOLOv9e (extended)", "yolov9e.pt"),
-    # YOLOv10
-    ("YOLOv10n (nano)", "yolov10n.pt"),
-    ("YOLOv10s (small)", "yolov10s.pt"),
-    ("YOLOv10m (medium)", "yolov10m.pt"),
-    ("YOLOv10b (balanced)", "yolov10b.pt"),
-    ("YOLOv10l (large)", "yolov10l.pt"),
-    ("YOLOv10x (xlarge)", "yolov10x.pt"),
-]
 
 
 def draw_detections(image, detections: list[Detection]) -> Any:
@@ -100,22 +98,14 @@ def create_inference_tab() -> gr.Tab:
                 input_image = gr.Image(label="Input Image", type="numpy")
 
                 # Model selection
-                model_type = gr.Radio(
-                    choices=["Pretrained Model", "Custom Model"],
-                    value="Pretrained Model",
-                    label="Model Source",
-                )
-
-                pretrained_model = gr.Dropdown(
-                    choices=ULTRALYTICS_MODELS,
+                model_name = gr.Textbox(
+                    label="Model Name",
+                    placeholder="e.g., yolov8n.pt, yolo26s, custom-model",
                     value="yolov8n.pt",
-                    label="Select Pretrained Model",
-                    visible=True,
                 )
 
                 custom_model = gr.File(
-                    label="Upload Custom Model (.pt)",
-                    visible=False,
+                    label="Or Upload Custom Model (.pt)",
                 )
 
                 conf_threshold = gr.Slider(
@@ -139,17 +129,17 @@ def create_inference_tab() -> gr.Tab:
             else:
                 return gr.update(visible=False), gr.update(visible=True)
 
-        def run_inference(image, model_type, pretrained, custom_model, conf):
+        def run_inference(image, model_name, custom_model, conf):
             if image is None:
                 return None, {"error": "No image provided"}
 
-            # Determine model path
-            if model_type == "Pretrained Model":
-                model_path = pretrained
-            else:
-                if custom_model is None:
-                    return None, {"error": "Please upload a custom model"}
+            # Determine model path - prefer custom model file, then text input
+            if custom_model is not None:
                 model_path = custom_model.name
+            elif model_name:
+                model_path = model_name
+            else:
+                return None, {"error": "Please enter a model name or upload a custom model"}
 
             logger.info(f"Running inference with model: {model_path}")
 
@@ -182,14 +172,8 @@ def create_inference_tab() -> gr.Tab:
 
         detect_btn.click(
             fn=run_inference,
-            inputs=[input_image, model_type, pretrained_model, custom_model, conf_threshold],
+            inputs=[input_image, model_name, custom_model, conf_threshold],
             outputs=[output_image, detection_info],
-        )
-
-        model_type.change(
-            fn=toggle_model_source,
-            inputs=[model_type],
-            outputs=[pretrained_model, custom_model],
         )
 
     return tab
@@ -205,21 +189,14 @@ def create_training_tab() -> gr.Tab:
             with gr.Column():
                 dataset_yaml = gr.File(label="Dataset YAML (.yaml)")
 
-                # Base model selection — mirrors Inference tab pattern
-                base_model_source = gr.Radio(
-                    choices=["From List", "Upload File"],
-                    value="From List",
-                    label="Base Model Source",
-                )
-                base_model_dropdown = gr.Dropdown(
-                    choices=ULTRALYTICS_MODELS,
+                # Base model selection
+                base_model_name = gr.Textbox(
+                    label="Base Model Name",
+                    placeholder="e.g., yolov8n.pt, yolo26s, custom-model",
                     value="yolov8n.pt",
-                    label="Select Base Model",
-                    visible=True,
                 )
                 base_model_file = gr.File(
-                    label="Upload Base Model (.pt)",
-                    visible=False,
+                    label="Or Upload Base Model (.pt)",
                 )
 
                 with gr.Accordion("Training Parameters", open=False):
@@ -244,21 +221,13 @@ def create_training_tab() -> gr.Tab:
                     label="Status",
                     lines=20,
                     max_lines=40,
-                    buttons=["copy"],
                     placeholder="Training log will stream here...",
                 )
                 training_output = gr.File(label="Trained Model")
 
-        def toggle_base_model_source(source):
-            if source == "From List":
-                return gr.update(visible=True), gr.update(visible=False)
-            else:
-                return gr.update(visible=False), gr.update(visible=True)
-
         def run_training(
             dataset_yaml_file,
-            base_source,
-            base_dropdown,
+            base_model_name,
             base_file,
             epochs_val,
             batch_size_val,
@@ -273,15 +242,14 @@ def create_training_tab() -> gr.Tab:
                 yield "Error: Dataset YAML is required", None
                 return
 
-            if base_source == "Upload File" and base_file is None:
-                yield "Error: Please upload a base model file", None
-                return
-
-            # Determine base model
-            if base_source == "From List":
-                model_path = base_dropdown
-            else:
+            # Determine base model - prefer file upload, then text input
+            if base_file is not None:
                 model_path = base_file.name
+            elif base_model_name:
+                model_path = base_model_name
+            else:
+                yield "Error: Please enter a base model name or upload a model file", None
+                return
 
             # Reset stop signal
             _stop_event.clear()
@@ -398,8 +366,7 @@ def create_training_tab() -> gr.Tab:
             fn=run_training,
             inputs=[
                 dataset_yaml,
-                base_model_source,
-                base_model_dropdown,
+                base_model_name,
                 base_model_file,
                 epochs,
                 batch_size,
@@ -412,125 +379,385 @@ def create_training_tab() -> gr.Tab:
 
         stop_btn.click(fn=stop_training, inputs=[], outputs=[])
 
-        base_model_source.change(
-            fn=toggle_base_model_source,
-            inputs=[base_model_source],
-            outputs=[base_model_dropdown, base_model_file],
-        )
-
     return tab
 
 
 def create_export_tab() -> gr.Tab:
     """Create the export tab."""
     with gr.Tab("Export", id="export") as tab:
-        gr.Markdown("### Export Model to ONNX")
-        gr.Markdown("Export your YOLO model for deployment on edge devices (RK3588, etc.)")
+        gr.Markdown("### Export Model to RKNN")
+        gr.Markdown("Export your YOLO model directly to RKNN format for Rockchip devices")
 
         with gr.Row():
             with gr.Column():
-                model_file = gr.File(label="Model (.pt file)", file_types=[".pt"])
-                opset_version = gr.Dropdown(
-                    choices=[10, 11, 12, 13, 14, 15],
-                    value=11,
-                    label="ONNX Opset Version",
-                    info="Use 11 or 12 for RK3588 compatibility",
+                pt_model_file = gr.File(label="Model (.pt file)", file_types=[".pt"])
+                platform = gr.Dropdown(
+                    choices=[
+                        "rk3588",
+                        "rk3576",
+                        "rk3566",
+                        "rk3568",
+                        "rk3562",
+                        "rv1103",
+                        "rv1106",
+                        "rv1103b",
+                        "rv1106b",
+                        "rk2118",
+                        "rv1126b",
+                    ],
+                    value="rk3588",
+                    label="Target Platform",
                 )
-                dynamic_axes = gr.Checkbox(value=True, label="Enable Dynamic Axes")
-                simplify = gr.Checkbox(value=True, label="Simplify Model")
-
-                # Custom output filename
-                output_filename = gr.Textbox(
-                    label="Output Filename (optional)",
-                    placeholder="e.g., my-model-rk3588-export.onnx",
-                    value="",
-                )
-
-                export_btn = gr.Button("Export to ONNX", variant="primary")
+                imgsz = gr.Slider(320, 1280, value=640, step=32, label="Image Size")
+                export_btn = gr.Button("Export to RKNN", variant="primary")
 
             with gr.Column():
-                export_status = gr.Textbox(label="Status", lines=3)
-                exported_file = gr.File(label="Exported Model")
+                export_status = gr.Textbox(label="Status", lines=5)
+                exported_file = gr.File(label="RKNN Model")
 
-        def run_export(model, opset, dynamic, simplify, output_filename):
+        def run_pt_to_rknn(model, platform, imgsz):
             try:
                 if not model:
                     return "Error: Please upload a model file", None
 
-                exporter = ONNXExporter(model.name)
+                rknn_path = pt_to_rknn(
+                    model.name,
+                    target_platform=platform,
+                    imgsz=int(imgsz),
+                )
 
-                # Handle custom output filename
-                export_kwargs = {
-                    "opset": int(opset),
-                    "dynamic": dynamic,
-                    "simplify": simplify,
-                }
+                rknn_dir = Path(rknn_path)
+                zip_path = str(rknn_dir.with_suffix(".zip"))
+                shutil.make_archive(
+                    str(rknn_dir.with_suffix("")),
+                    "zip",
+                    rknn_dir,
+                )
 
-                if output_filename:
-                    # Ensure .onnx extension
-                    if not output_filename.endswith(".onnx"):
-                        output_filename += ".onnx"
-                    export_kwargs["output_filename"] = output_filename
-
-                onnx_path = exporter.export(**export_kwargs)
-
-                logger.info(f"Model exported to: {onnx_path}")
-                return f"Exported successfully!\n\nOutput:\n{onnx_path}", onnx_path
+                logger.info(f"RKNN model exported to: {rknn_path}")
+                return (
+                    f"RKNN export successful!\n\nPlatform: {platform}\nDownload: {zip_path}",
+                    zip_path,
+                )
 
             except Exception as e:
-                logger.error(f"Export failed: {e}")
+                logger.error(f"RKNN export failed: {e}")
                 return f"Export failed: {str(e)}", None
 
         export_btn.click(
-            fn=run_export,
-            inputs=[model_file, opset_version, dynamic_axes, simplify, output_filename],
+            fn=run_pt_to_rknn,
+            inputs=[pt_model_file, platform, imgsz],
             outputs=[export_status, exported_file],
         )
 
-        # RK3588 quick export
-        gr.Markdown("### Quick Export for RK3588")
-        gr.Markdown("Exports with recommended settings for RK3588 (opset=11, dynamic, simplified)")
+        gr.Markdown("---")
+        gr.Markdown("### Convert ONNX to RKNN")
+        gr.Markdown("Convert existing ONNX model to RKNN format (requires rknn-toolkit2)")
 
-        rk3588_filename = gr.Textbox(
-            label="Output Filename",
-            placeholder="model-rk3588-export.onnx",
-            value="",
+        with gr.Row():
+            with gr.Column():
+                onnx_file = gr.File(
+                    label="ONNX Model (.onnx)",
+                    file_types=[".onnx"],
+                )
+                onnx_platform = gr.Dropdown(
+                    choices=[
+                        "rk3588",
+                        "rk3576",
+                        "rk3566",
+                        "rk3568",
+                        "rk3562",
+                        "rv1103",
+                        "rv1106",
+                        "rv1103b",
+                        "rv1106b",
+                        "rk2118",
+                        "rv1126b",
+                    ],
+                    value="rk3588",
+                    label="Target Platform",
+                )
+                onnx_quantize = gr.Checkbox(
+                    value=False,
+                    label="Enable INT8 Quantization",
+                    info="Requires calibration dataset",
+                )
+                onnx_dataset = gr.File(
+                    label="Calibration Dataset (txt file with image paths)",
+                    file_types=[".txt"],
+                    visible=False,
+                )
+                onnx_output = gr.Textbox(
+                    label="Output Filename (optional)",
+                    placeholder="model.rknn",
+                    value="",
+                )
+                onnx_convert_btn = gr.Button("Convert ONNX to RKNN", variant="primary")
+
+            with gr.Column():
+                onnx_status = gr.Textbox(label="Status", lines=5)
+                onnx_rknn_file = gr.File(label="RKNN Model")
+
+        onnx_quantize.change(
+            fn=lambda x: gr.update(visible=x),
+            inputs=[onnx_quantize],
+            outputs=[onnx_dataset],
         )
 
-        rk3588_btn = gr.Button("Export for RK3588 (Recommended Settings)")
-
-        def run_rk3588_export(model, filename):
+        def run_onnx_to_rknn(onnx_input, platform, quantize, dataset, output_filename):
             try:
-                if not model:
-                    return "Error: Please upload a model file", None
+                if not onnx_input:
+                    return "Error: Please upload an ONNX model file", None
 
-                # Generate default filename if not provided
-                if not filename:
-                    model_name = Path(model.name).stem
-                    filename = f"{model_name}-rk3588-export.onnx"
-                elif not filename.endswith(".onnx"):
-                    filename += ".onnx"
+                try:
+                    from yolo_demo.export import RKNNExporter
+                except ImportError:
+                    return (
+                        "Error: rknn-toolkit2 is not installed.\n"
+                        "Install with: pip install 'yolo-demo[rknn]'\n"
+                        "Note: Only supports Linux x86_64 and Python 3.8-3.10",
+                        None,
+                    )
 
-                # Use the prepare_for_rk3588 function but with custom output
-                exporter = ONNXExporter(model.name)
-                onnx_path = exporter.export(
-                    opset=11,
-                    dynamic=True,
-                    simplify=True,
-                    output_filename=filename,
+                if not output_filename:
+                    model_name = Path(onnx_input.name).stem
+                    output_filename = f"{model_name}.rknn"
+                elif not output_filename.endswith(".rknn"):
+                    output_filename += ".rknn"
+
+                dataset_path = None
+                if quantize:
+                    if not dataset:
+                        return "Error: Calibration dataset required for quantization", None
+                    dataset_path = dataset.name
+
+                exporter = RKNNExporter(
+                    onnx_input.name,
+                    target_platform=platform,
+                )
+                rknn_path = exporter.export(
+                    output=output_filename,
+                    quantize=quantize,
+                    dataset=dataset_path,
                 )
 
-                logger.info(f"RK3588 model exported to: {onnx_path}")
-                return f"RK3588-ready ONNX exported!\n\nOutput:\n{onnx_path}", onnx_path
+                logger.info(f"RKNN model exported to: {rknn_path}")
+                return (
+                    f"RKNN conversion successful!\n\nPlatform: {platform}\nOutput: {rknn_path}",
+                    rknn_path,
+                )
+
+            except ImportError as e:
+                return f"Error: {str(e)}", None
+            except Exception as e:
+                logger.error(f"RKNN conversion failed: {e}")
+                return f"Conversion failed: {str(e)}", None
+
+        onnx_convert_btn.click(
+            fn=run_onnx_to_rknn,
+            inputs=[onnx_file, onnx_platform, onnx_quantize, onnx_dataset, onnx_output],
+            outputs=[onnx_status, onnx_rknn_file],
+        )
+
+    return tab
+
+
+def create_video_stream_tab() -> gr.Tab:
+    """Create the real-time video streaming tab."""
+    import cv2
+
+    with gr.Tab("Video Stream", id="video_stream") as tab:
+        gr.Markdown("### Real-time Video Stream Detection")
+        gr.Markdown("Choose webcam or RTSP stream for real-time object detection")
+
+        with gr.Row():
+            with gr.Column(scale=1):
+                source_type = gr.Radio(
+                    choices=["Webcam", "RTSP Stream"],
+                    value="Webcam",
+                    label="Video Source",
+                    info="Select camera or RTSP stream"
+                )
+
+                camera_id = gr.Number(
+                    value=0,
+                    label="Camera ID",
+                    info="Webcam device index (0 for default)",
+                    visible=True
+                )
+
+                rtsp_url = gr.Textbox(
+                    label="RTSP URL",
+                    placeholder="rtsp://username:password@ip:port/stream",
+                    visible=False
+                )
+
+                model_name = gr.Textbox(
+                    label="Model Name",
+                    placeholder="e.g., yolov8n.pt",
+                    value="yolov8n.pt",
+                )
+
+                conf_threshold = gr.Slider(
+                    minimum=0.01,
+                    maximum=1.0,
+                    value=0.25,
+                    step=0.01,
+                    label="Confidence Threshold",
+                )
+
+                stream_btn = gr.Button("Start Stream", variant="primary")
+                stop_btn = gr.Button("Stop Stream", variant="stop")
+
+            with gr.Column(scale=3):
+                stream_output = gr.Image(
+                    label="Live Detection",
+                    type="numpy",
+                )
+                stream_info = gr.Textbox(
+                    label="Status",
+                    lines=3,
+                    interactive=False,
+                )
+
+        state = gr.State(value={"running": False, "cap": None, "thread": None})
+
+        def update_source_visibility(source):
+            if source == "Webcam":
+                return gr.update(visible=True), gr.update(visible=False)
+            else:
+                return gr.update(visible=False), gr.update(visible=True)
+
+        source_type.change(
+            fn=update_source_visibility,
+            inputs=[source_type],
+            outputs=[camera_id, rtsp_url],
+        )
+
+        def start_stream(cam_id, rtsp, model, conf, state_dict):
+            state_dict["running"] = True
+            state_dict["cap"] = None
+            state_dict["thread"] = None
+            return state_dict
+
+        def run_video_stream(source_type, cam_id, rtsp_url, model_name, conf):
+            try:
+                import threading
+                import time
+                import queue
+
+                frame_queue: queue.Queue = queue.Queue(maxsize=2)
+                stop_event = threading.Event()
+
+                engine = None
+                cap = None
+
+                if source_type == "Webcam":
+                    cap = cv2.VideoCapture(int(cam_id))
+                else:
+                    cap = cv2.VideoCapture(rtsp_url)
+
+                if not cap.isOpened():
+                    yield {"running": False}, None, "Error: Cannot open video source"
+                    return
+
+                try:
+                    engine = create_engine(model_name)
+                    engine.load_model()
+                except Exception as e:
+                    yield {"running": False}, None, f"Error loading model: {e}"
+                    return
+
+                frame_count = 0
+                fps = 0.0
+                start_time = time.time()
+
+                _local_cap = cap
+
+                def capture_thread():
+                    while not stop_event.is_set():
+                        if _local_cap is None or not _local_cap.isOpened():
+                            break
+                        ret, frame = _local_cap.read()
+                        if ret:
+                            if frame_queue.full():
+                                try:
+                                    frame_queue.get_nowait()
+                                except queue.Empty:
+                                    pass
+                            try:
+                                frame_queue.put_nowait(frame)
+                            except queue.Full:
+                                pass
+                        else:
+                            if source_type == "Webcam":
+                                _local_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            else:
+                                break
+                    if _local_cap:
+                        _local_cap.release()
+
+                cap_thread = threading.Thread(target=capture_thread, daemon=True)
+                cap_thread.start()
+
+                state_ref = {
+                    "running": True,
+                    "cap": cap,
+                    "thread": cap_thread,
+                    "stop_event": stop_event,
+                }
+
+                while state_ref["running"] and not stop_event.is_set():
+                    try:
+                        frame = frame_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                    result = engine.predict(rgb_frame)
+                    output_img = draw_detections(rgb_frame, result.detections)
+
+                    frame_count += 1
+                    elapsed = time.time() - start_time
+                    if elapsed > 0:
+                        fps = frame_count / elapsed
+
+                    bgr_output = cv2.cvtColor(output_img, cv2.COLOR_RGB2BGR)
+
+                    info = (
+                        f"FPS: {fps:.1f} | "
+                        f"Detections: {len(result.detections)} | "
+                        f"Backend: {engine.device}"
+                    )
+
+                    yield (
+                        {"running": True, "cap": cap,
+                         "thread": cap_thread, "stop_event": stop_event},
+                        bgr_output,
+                        info,
+                    )
+
+                if state_ref["thread"]:
+                    state_ref["thread"].join(timeout=1.0)
 
             except Exception as e:
-                logger.error(f"RK3588 export failed: {e}")
-                return f"Export failed: {str(e)}", None
+                logger.error(f"Stream error: {e}")
+                yield {"running": False, "cap": None, "thread": None}, None, f"Error: {str(e)}"
+            finally:
+                if cap:
+                    cap.release()
 
-        rk3588_btn.click(
-            fn=run_rk3588_export,
-            inputs=[model_file, rk3588_filename],
-            outputs=[export_status, exported_file],
+        stream_btn.click(
+            fn=run_video_stream,
+            inputs=[source_type, camera_id, rtsp_url, model_name, conf_threshold],
+            outputs=[state, stream_output, stream_info],
+        )
+
+        stop_btn.click(
+            fn=lambda: {"running": False, "cap": None, "thread": None},
+            inputs=[],
+            outputs=[state],
         )
 
     return tab
@@ -549,10 +776,10 @@ def create_webui() -> gr.Blocks:
 
         with gr.Tabs():
             create_inference_tab()
+            create_video_stream_tab()
             create_training_tab()
             create_export_tab()
             create_dataset_converter_tab()
-            create_rknn_validation_tab()
 
         gr.Markdown(
             """

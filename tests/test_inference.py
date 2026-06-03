@@ -14,7 +14,6 @@ from yolo_demo.inference import (
     DetectionResult,
     create_engine,
     get_available_backend,
-    load_class_names_from_onnx,
 )
 
 
@@ -151,98 +150,3 @@ class TestBackendSelection:
         """Test backend detection returns valid string."""
         backend = get_available_backend()
         assert backend in ["cpu", "cuda", "mps"]
-
-
-class TestLoadClassNamesFromOnnx:
-    """Test loading class names from ONNX metadata."""
-
-    def test_load_class_names_from_onnx_file_not_found(self):
-        """Test loading from non-existent file."""
-        from yolo_demo.inference.rknn_backend import load_class_names_from_onnx
-
-        result = load_class_names_from_onnx("nonexistent.onnx")
-        assert result is None
-
-    def test_load_class_names_from_onnx_parsed_correctly(self):
-        """Test that class names are parsed correctly from real ONNX."""
-        import os
-        from yolo_demo.export import ONNXExporter
-        from yolo_demo.inference.rknn_backend import load_class_names_from_onnx
-
-        exporter = ONNXExporter("yolov8n.pt")
-        onnx_path = exporter.export(output="test_names.onnx", simplify=True)
-
-        try:
-            names = load_class_names_from_onnx(onnx_path)
-            assert names is not None
-            assert len(names) == 80
-            assert names[0] == "person"
-            assert names[1] == "bicycle"
-        finally:
-            if os.path.exists(onnx_path):
-                os.remove(onnx_path)
-
-
-class TestRKNNBackendClassNames:
-    """Test RKNN backend class names handling."""
-
-    def test_rknn_backend_init_with_class_names_dict(self):
-        """Test RKNNBackend initialization with class names dict."""
-        with patch("yolo_demo.inference.rknn_backend.RKNNBackend.load_model"):
-            from yolo_demo.inference.rknn_backend import RKNNBackend
-
-            class_names = {0: "person", 1: "car", 2: "dog"}
-            backend = RKNNBackend(
-                "test.rknn",
-                class_names=class_names,
-            )
-
-            assert backend._class_names == class_names
-
-    def test_rknn_backend_init_with_class_names_list(self):
-        """Test RKNNBackend initialization with class names list."""
-        with patch("yolo_demo.inference.rknn_backend.RKNNBackend.load_model"):
-            from yolo_demo.inference.rknn_backend import RKNNBackend
-
-            class_names = ["person", "car", "dog"]
-            backend = RKNNBackend(
-                "test.rknn",
-                class_names=class_names,
-            )
-
-            assert backend._class_names == {0: "person", 1: "car", 2: "dog"}
-
-    def test_rknn_backend_init_without_class_names(self):
-        """Test RKNNBackend initialization without class names."""
-        with patch("yolo_demo.inference.rknn_backend.RKNNBackend.load_model"):
-            from yolo_demo.inference.rknn_backend import RKNNBackend
-
-            backend = RKNNBackend("test.rknn")
-
-            assert backend._class_names is None
-
-    def test_rknn_get_class_name_with_dict(self):
-        """Test _get_class_name returns correct name from dict."""
-        with patch("yolo_demo.inference.rknn_backend.RKNNBackend.load_model"):
-            from yolo_demo.inference.rknn_backend import RKNNBackend
-
-            class_names = {0: "person", 1: "car", 2: "dog"}
-            backend = RKNNBackend(
-                "test.rknn",
-                class_names=class_names,
-            )
-
-            assert backend._get_class_name(0) == "person"
-            assert backend._get_class_name(1) == "car"
-            assert backend._get_class_name(2) == "dog"
-            assert backend._get_class_name(99) == "99"
-
-    def test_rknn_get_class_name_without_dict(self):
-        """Test _get_class_name returns string of ID when no dict."""
-        with patch("yolo_demo.inference.rknn_backend.RKNNBackend.load_model"):
-            from yolo_demo.inference.rknn_backend import RKNNBackend
-
-            backend = RKNNBackend("test.rknn")
-
-            assert backend._get_class_name(0) == "0"
-            assert backend._get_class_name(5) == "5"

@@ -2,7 +2,7 @@
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import numpy as np
 import torch
@@ -14,7 +14,7 @@ from .engine import Detection, DetectionResult, InferenceEngine
 class MPSBackend(InferenceEngine):
     """YOLO inference backend using Apple Metal Performance Shaders (MPS)."""
 
-    def __init__(self, model_path: str | Path):
+    def __init__(self, model_path: Union[str, Path]):
         if not torch.backends.mps.is_available():
             raise RuntimeError("MPS is not available on this system")
         super().__init__(model_path)
@@ -31,9 +31,7 @@ class MPSBackend(InferenceEngine):
     def predict(self, image: np.ndarray) -> DetectionResult:
         """Run inference on MPS device."""
         start = time.perf_counter()
-        results = self.model.predict(
-            image, device=self.device, verbose=False, conf=0.25
-        )
+        results = self.model.predict(image, device=self.device, verbose=False, conf=0.25)
         elapsed = (time.perf_counter() - start) * 1000
 
         result = results[0]

@@ -3,34 +3,42 @@ name = "yolo-demo"
 version = "0.1.0"
 description = "Lightweight real-time object detection system for edge computing"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.9.*"
 dependencies = [
-    "ultralytics>=8.0",
-    "torch>=2.0",
-    "onnx>=1.15",
-    "onnxruntime>=1.16",
-    "gradio>=4.0",
-    "fastapi>=0.109",
-    "uvicorn>=0.27",
-    "pydantic>=2.0",
-    "python-multipart>=0.0.6",
-    "pyyaml>=6.0",
+    "ultralytics>=8.0,<9.0",
+    "torch>=2.0,<2.5",
+    "torchvision>=0.15,<0.20",
+    "onnx>=1.15,<1.17",
+    "onnxruntime>=1.16,<1.20",
+    "gradio>=4.36,<4.40",
+    "huggingface-hub>=0.19,<0.27",
+    "fastapi>=0.100,<0.120",
+    "uvicorn>=0.24,<0.32",
+    "pydantic>=2.0,<3.0",
+    "python-multipart>=0.0.6,<1.0",
+    "pyyaml>=6.0,<7.0",
+    "numpy>=1.22,<2.0",
+    "opencv-python>=4.6,<5.0",
+    "pillow>=9.0,<11.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21",
-    "pytest-cov>=4.0",
-    "httpx>=0.24",
-    "ruff>=0.1",
+    "pytest>=7.0,<9.0",
+    "pytest-asyncio>=0.21,<0.25",
+    "pytest-cov>=4.0,<6.0",
+    "httpx>=0.24,<0.28",
+    "ruff>=0.1,<0.7",
+]
+rknn = [
+    "rknn-toolkit2>=2.0,<3.0",
+    "setuptools>=65,<81",  # pkg_resources required by rknn-toolkit2 (removed in 81+)
 ]
 
 [project.scripts]
 yolo-demo = "yolo_demo.main:cli"
 yolo-demo-webui = "yolo_demo.ui.webui:launch"
 yolo-demo-api = "yolo_demo.api.app:serve"
-yolo-demo-convert-rknn = "yolo_demo.export.rknn_converter:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -41,7 +49,7 @@ packages = ["src/yolo_demo"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]

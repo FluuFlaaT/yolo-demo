@@ -4,10 +4,9 @@ import torch
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..inference import get_available_backend
 from .routes import export, inference, training
 from .schemas import HealthResponse, ModelsResponse
-
-from ..inference import get_available_backend
 
 
 def create_app() -> FastAPI:
