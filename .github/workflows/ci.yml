@@ -50,7 +50,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
 
       - run: uv sync --extra dev
 
@@ -89,7 +89,7 @@ jobs:
       - run: uv sync --extra dev
 
       - name: Run MPS inference tests
-        run: uv run pytest -m mps -v --tb=short
+        run: uv run pytest -m mps -v --tb=short --no-cov
 
   docker-smoke:
     name: Docker build & smoke test
