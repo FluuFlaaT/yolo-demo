@@ -54,7 +54,6 @@ Dockerfile
 
 # ── Documentation ────────────────────────────────────────────────────────────
 docs/
-README.md
 PROJECT_STRUCTURE.md
 AGENTS.md
 
