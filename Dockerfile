@@ -58,6 +58,9 @@ COPY --from=build --chown=appuser:appuser /build/configs       /opt/app/configs
 COPY --from=build --chown=appuser:appuser /build/scripts       /opt/app/scripts
 COPY --from=build --chown=appuser:appuser /build/pyproject.toml /opt/app/
 
+# ── Fix shebangs: uv scripts reference /build/.venv/bin/python, but venv is at /opt/venv
+RUN mkdir -p /build && ln -s /opt/venv /build/.venv
+
 # ── Environment ───────────────────────────────────────────────────────────
 ENV VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
