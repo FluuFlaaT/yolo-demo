@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -167,6 +168,12 @@ def create_training_tab() -> gr.Tab:
                         placeholder="Leave empty for default (runs/detect/train)",
                         value="",
                     )
+                    zip_all = gr.Checkbox(
+                        value=False,
+                        label="Download ALL files in zip, "
+                        "including best.pt, last.pt, results.csv, "
+                        "results.png, confusion matrix, labels, and args.yaml",
+                    )
 
                 with gr.Row():
                     train_btn = gr.Button("Start Training", variant="primary")
@@ -211,6 +218,7 @@ def create_training_tab() -> gr.Tab:
         def _on_training(
             dataset_file, model_name_val, model_file,
             epochs_val, batch_val, imgsz_val, lr0_val, output_val,
+            zip_all_val,
         ) -> Generator:
             nonlocal active_job_id
 
@@ -255,7 +263,10 @@ def create_training_tab() -> gr.Tab:
                         kind, payload = msg
                         if kind == "done":
                             final_path = payload.strip()
-                            serve_path = _copy_model_to_temp(final_path)
+                            if zip_all_val:
+                                serve_path = _zip_training_output(final_path)
+                            else:
+                                serve_path = _copy_model_to_temp(final_path)
                             yield "".join(log_lines), serve_path
                             return
                         else:
@@ -277,7 +288,7 @@ def create_training_tab() -> gr.Tab:
         train_btn.click(
             fn=_on_training,
             inputs=[dataset_yaml, base_model_name, base_model_file,
-                    epochs, batch_size, imgsz, lr0, output_dir],
+                    epochs, batch_size, imgsz, lr0, output_dir, zip_all],
             outputs=[training_status, training_output],
         )
         stop_btn.click(fn=_on_stop, inputs=[], outputs=[])
@@ -299,6 +310,37 @@ def _copy_model_to_temp(model_path: str) -> Optional[str]:
         return str(dst)
     except Exception as e:
         logger.warning("Could not copy model: %s", e)
+        return None
+
+
+def _zip_training_output(model_path: str) -> Optional[str]:
+    """Zip the entire training run directory for download.
+
+    The model_path is expected to be `<save_dir>/weights/best.pt`.
+    The parent of `weights/` is the training run directory containing all
+    Ultralytics auto-generated artifacts (weights, results, plots, etc.).
+    """
+    best_pt = Path(model_path)
+    if not best_pt.exists():
+        logger.warning("Expected model not found at: %s", model_path)
+        return None
+
+    run_dir = best_pt.parent.parent  # <save_dir>/weights/ → <save_dir>/
+    if not run_dir.is_dir():
+        logger.warning("Training run directory not found: %s", run_dir)
+        return None
+
+    zip_dst = Path(tempfile.gettempdir()) / f"{run_dir.name}.zip"
+    try:
+        with zipfile.ZipFile(zip_dst, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path in sorted(run_dir.rglob("*")):
+                if file_path.is_file() and not file_path.name.startswith("."):
+                    arcname = file_path.relative_to(run_dir.parent)
+                    zf.write(file_path, arcname)
+        logger.info("Training output zipped to temp for download: %s", zip_dst)
+        return str(zip_dst)
+    except Exception as e:
+        logger.warning("Could not zip training output: %s", e)
         return None
 
 
