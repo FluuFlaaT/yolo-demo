@@ -116,13 +116,21 @@ jobs:
       - name: Smoke test — API mode
         run: |
           docker run -d --name yolo-demo-smoke yolo-demo:ci-${{ github.sha }}
-          sleep 8
-          # Check if container is still alive
-          if ! docker ps --format '{{.Names}}' | grep -q yolo-demo-smoke; then
-            echo "::warning::Container exited early. Dumping logs:"
-            docker logs yolo-demo-smoke || true
-            docker rm -f yolo-demo-smoke || true
-            exit 1
-          fi
-          docker exec yolo-demo-smoke curl -sf http://localhost:8000/health
+
+          # Retry health check for up to 30s (CI runners are slow on cold Docker + torch import)
+          for i in $(seq 1 30); do
+            # Bail early if container exited unexpectedly
+            if ! docker ps --format '{{.Names}}' | grep -q yolo-demo-smoke; then
+              echo "::warning::Container exited early. Dumping logs:"
+              docker logs yolo-demo-smoke || true
+              docker rm -f yolo-demo-smoke || true
+              exit 1
+            fi
+            if docker exec yolo-demo-smoke curl -sf http://localhost:8000/health; then
+              echo "Health OK after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
           docker stop yolo-demo-smoke && docker rm yolo-demo-smoke

@@ -14,33 +14,60 @@ logger = logging.getLogger(__name__)
 
 
 def extract_voc_zip(zip_path: str) -> str:
-    """Extract a VOC dataset zip and find the VOCdevkit directory.
+    """Extract a VOC dataset zip and return the path containing Annotations + JPEGImages.
 
-    Args:
-        zip_path: Path to the .zip file.
+    Handles three common layouts:
+      - zip/VOCdevkit/VOC2007/Annotations/
+      - zip/VOC2007/Annotations/
+      - zip/Annotations/ + JPEGImages/ at root
 
     Returns:
-        Path to the VOCdevkit directory as string.
+        Path to the directory that should be passed to convert_voc_to_yolo
+        (i.e., the parent of Annotations/ if flat, or VOCdevkit/ if present).
 
     Raises:
-        FileNotFoundError: If no VOCdevkit directory is found after extraction.
+        FileNotFoundError: If neither Annotations/ nor VOCdevkit is found.
     """
     extract_dir = Path(tempfile.mkdtemp())
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(extract_dir)
 
-    # Look for VOCdevkit directory
-    voc_dir = extract_dir / "VOCdevkit"
-    if voc_dir.exists():
-        return str(voc_dir)
+    known = {p.name for p in extract_dir.iterdir()}
 
-    # Fallback: find any directory containing "VOC" in its name
-    for d in extract_dir.iterdir():
-        if d.is_dir() and "VOC" in d.name:
-            return str(d)
+    # Case A: flat layout — Annotations/ + JPEGImages/ at root
+    if "Annotations" in known:
+        return str(extract_dir)
+
+    # Case B: VOCdevkit/ wrapper present
+    vocdevkit = extract_dir / "VOCdevkit"
+    if vocdevkit.is_dir():
+        return str(vocdevkit)
+
+    # Case C: year subdirectory (e.g. VOC2007/ directly)
+    for year in ("VOC2007", "VOC2012", "VOC2010"):
+        year_dir = extract_dir / year
+        if year_dir.is_dir():
+            return str(extract_dir)
 
     raise FileNotFoundError(
-        f"No VOCdevkit directory found in {zip_path}"
+        "No VOC dataset found in zip. Expected Annotations/ and JPEGImages/ "
+        "at the root, or inside VOCdevkit/, VOC2007/, VOC2012/, or VOC2010/."
+    )
+
+
+def _extract_coco_zip(zip_path: str) -> str:
+    """Extract a COCO zip and return the path to the annotations JSON file."""
+    extract_dir = Path(tempfile.mkdtemp())
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(extract_dir)
+
+    for f in extract_dir.rglob("*.json"):
+        return str(f)
+
+    top_level = sorted(p.name for p in extract_dir.iterdir())
+    raise FileNotFoundError(
+        "No .json file found in COCO zip archive.\n"
+        f"Top-level contents: {top_level}"
     )
 
 
@@ -56,7 +83,7 @@ def convert_dataset(
 
     Args:
         format_type: "COCO" or "VOC".
-        coco_file_path: Path to COCO annotations JSON file (or None).
+        coco_file_path: Path to COCO zip or JSON file (or None).
         voc_file_path: Path to VOC zip file or directory (or None).
         voc_split: Dataset split for VOC ("trainval", "train", "val", "test").
         copy_images: Whether to copy images to the output directory.
@@ -64,43 +91,47 @@ def convert_dataset(
 
     Returns:
         (status_message, yaml_path, dataset_info): Status text, path to the
-        generated dataset.yaml, and a dict with dataset metadata (classes,
-        image count, label count).
+        generated dataset.yaml, and a dict with dataset metadata.
     """
     output_dir = Path(tempfile.mkdtemp()) / output_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if format_type == "COCO":
         if not coco_file_path:
-            return "Error: Please upload COCO annotations JSON", None, None
+            return "Error: Please upload a COCO zip or JSON file", None, None
+
+        if coco_file_path.lower().endswith(".zip"):
+            json_path = _extract_coco_zip(coco_file_path)
+        else:
+            json_path = coco_file_path
 
         yaml_path = convert_coco_to_yolo(
-            coco_json_path=coco_file_path,
+            coco_json_path=json_path,
             output_dir=str(output_dir),
             copy_images=copy_images,
         )
-    else:  # VOC
+    else:
         if not voc_file_path:
-            return "Error: Please upload VOCdevkit directory", None, None
+            return "Error: Please upload a VOC zip or directory", None, None
 
-        # Handle zip extraction
-        if voc_file_path.endswith(".zip"):
-            voc_dir = extract_voc_zip(voc_file_path)
+        src = Path(voc_file_path)
+        if src.suffix.lower() == ".zip":
+            voc_root = extract_voc_zip(voc_file_path)
+        elif src.is_dir():
+            voc_root = voc_file_path
         else:
-            voc_dir = voc_file_path
+            return f"Error: Path not found: {voc_file_path}", None, None
 
         yaml_path = convert_voc_to_yolo(
-            voc_devkit_dir=voc_dir,
+            voc_devkit_dir=voc_root,
             output_dir=str(output_dir),
             copy_images=copy_images,
             split=voc_split,
         )
 
-    # Load and preview dataset YAML
     with open(yaml_path) as f:
         dataset_info: Dict[str, Any] = yaml.safe_load(f)
 
-    # Count images and labels
     images_dir = output_dir / "images"
     labels_dir = output_dir / "labels"
     num_images = (
