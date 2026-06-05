@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Convert COCO or VOC format datasets to YOLO format."""
+"""Convert COCO or VOC format datasets to YOLO format.
+
+DEPRECATED: This script is superseded by the module at
+src/yolo_demo/ui/coco2yolo.py.  Use ``uv run yolo-demo webui`` → Dataset
+Converter tab instead, or import from yolo_demo.ui.coco2yolo directly.
+
+This standalone copy is kept for backward-compatibility with existing
+workflows and is no longer actively maintained.
+"""
 
 import argparse
 import json
@@ -7,7 +15,7 @@ import logging
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -182,7 +190,7 @@ def convert_coco_to_yolo(
 
     yaml_path = output_path / "dataset.yaml"
     dataset_yaml = {
-        "path": str(output_path.absolute()),
+        "path": ".",
         "train": "images",
         "val": "images",
         "test": "images",
@@ -285,7 +293,7 @@ def convert_voc_to_yolo(
     yaml_path = output_path / "dataset.yaml"
     class_names_list = sorted(class_name_to_idx.keys())
     dataset_yaml = {
-        "path": str(output_path.absolute()),
+        "path": ".",
         "train": "images",
         "val": "images",
         "test": "images",
@@ -361,9 +369,9 @@ def main():
             split=args.split,
         )
 
-    print(f"\nConversion complete!")
+    print("\nConversion complete!")
     print(f"Dataset YAML: {yaml_path}")
-    print(f"\nTo train with this dataset:")
+    print("\nTo train with this dataset:")
     print(f"  uv run yolo-demo train {yaml_path} --epochs 100")
 
 

@@ -18,10 +18,8 @@ Requirements:
 
 import argparse
 import logging
-import os
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
@@ -112,7 +110,7 @@ class RKNNConverter:
         )
 
         # Load ONNX model (rknn-toolkit2 2.x removed check_model parameter)
-        logger.info(f"Loading ONNX model...")
+        logger.info("Loading ONNX model...")
         self.rknn.load_onnx(model=str(onnx_path))
 
         logger.info("ONNX model loaded successfully")

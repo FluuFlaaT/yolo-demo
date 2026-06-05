@@ -4,7 +4,7 @@
 import argparse
 import sys
 
-from yolo_demo.training.trainer import TrainingConfig, Trainer
+from yolo_demo.training.trainer import Trainer, TrainingConfig
 
 
 def main():
@@ -48,7 +48,7 @@ def main():
             project=args.output,
         )
 
-    print(f"Training configuration:")
+    print("Training configuration:")
     print(f"  Model: {config.model}")
     print(f"  Data: {config.data}")
     print(f"  Epochs: {config.epochs}")
@@ -61,7 +61,7 @@ def main():
     result = trainer.train()
 
     if result.success:
-        print(f"\n✓ Training completed!")
+        print("\n✓ Training completed!")
         print(f"  Model saved to: {result.model_path}")
         if result.metrics:
             print(f"  Metrics: {result.metrics}")
