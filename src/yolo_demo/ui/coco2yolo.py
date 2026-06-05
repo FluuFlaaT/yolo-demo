@@ -182,7 +182,7 @@ def convert_coco_to_yolo(
 
     yaml_path = output_path / "dataset.yaml"
     dataset_yaml = {
-        "path": str(output_path.absolute()),
+        "path": ".",
         "train": "images",
         "val": "images",
         "test": "images",
@@ -199,6 +199,29 @@ def convert_coco_to_yolo(
     return str(yaml_path)
 
 
+def _find_voc_dir(voc_root: Path) -> Path:
+    """Find the actual VOC dataset directory (containing Annotations/, JPEGImages/).
+
+    Handles three common layouts:
+      a) voc_root/VOC2007/Annotations/    (standard inside VOCdevkit)
+      b) voc_root/VOC2007/Annotations/    (no VOCdevkit wrapper)
+      c) voc_root/Annotations/            (flat, no year subdirectory)
+    """
+    for year in ["VOC2007", "VOC2012", "VOC2010"]:
+        candidate = voc_root / year
+        if (candidate / "Annotations").exists() and (candidate / "JPEGImages").exists():
+            return candidate
+
+    if (voc_root / "Annotations").exists() and (voc_root / "JPEGImages").exists():
+        return voc_root
+
+    raise ValueError(
+        f"No VOC dataset found in {voc_root}. "
+        "Expected Annotations/ and JPEGImages/ at the root "
+        "or inside a VOC2007/, VOC2012/, or VOC2010/ subdirectory."
+    )
+
+
 def convert_voc_to_yolo(
     voc_devkit_dir: str,
     output_dir: str,
@@ -208,7 +231,8 @@ def convert_voc_to_yolo(
     """Convert VOC format dataset to YOLO format.
 
     Args:
-        voc_devkit_dir: Path to VOCdevkit directory (contains VOC2007, VOC2012, etc.).
+        voc_devkit_dir: Path to VOC dataset. Supports both VOCdevkit/VOC2007/
+                        layout and flat Annotations/+JPEGImages/ layout.
         output_dir: Output directory for YOLO format dataset.
         copy_images: Whether to copy images to output directory.
         split: Dataset split (train, val, test, trainval).
@@ -219,15 +243,7 @@ def convert_voc_to_yolo(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    voc_dir = None
-    for year in ["VOC2007", "VOC2012", "VOC2010"]:
-        test_dir = Path(voc_devkit_dir) / year
-        if test_dir.exists():
-            voc_dir = test_dir
-            break
-
-    if voc_dir is None:
-        raise ValueError(f"No VOC dataset found in {voc_devkit_dir}")
+    voc_dir = _find_voc_dir(Path(voc_devkit_dir))
 
     logger.info(f"Using VOC dataset from {voc_dir}")
 
@@ -237,11 +253,24 @@ def convert_voc_to_yolo(
     labels_dir.mkdir(exist_ok=True)
 
     split_file = voc_dir / "ImageSets" / "Main" / f"{split}.txt"
-    if not split_file.exists():
-        raise ValueError(f"Split file not found: {split_file}")
-
-    with open(split_file) as f:
-        image_ids = [line.strip() for line in f.readlines()]
+    if split_file.exists():
+        with open(split_file) as f:
+            image_ids = [line.strip() for line in f.readlines()]
+        logger.info("Using ImageSets split file with %d entries", len(image_ids))
+    else:
+        logger.warning(
+            "No ImageSets/Main/%s.txt found — falling back to all .xml files in Annotations/",
+            split,
+        )
+        annotations_dir = voc_dir / "Annotations"
+        image_ids = sorted(
+            p.stem for p in annotations_dir.glob("*.xml")
+        )
+        if not image_ids:
+            raise ValueError(
+                "No annotations found — neither ImageSets/Main/%s.txt "
+                "nor any .xml files in %s exist" % (split, annotations_dir)
+            )
 
     all_annotations: List[dict] = []
     all_class_names: Set[str] = set()
@@ -285,7 +314,7 @@ def convert_voc_to_yolo(
     yaml_path = output_path / "dataset.yaml"
     class_names_list = sorted(class_name_to_idx.keys())
     dataset_yaml = {
-        "path": str(output_path.absolute()),
+        "path": ".",
         "train": "images",
         "val": "images",
         "test": "images",
